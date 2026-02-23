@@ -75,11 +75,14 @@ inductive Instr
 | mulx (hi : Operand) (lo : Operand) (src1: Operand)
 | adcx (dst : Operand) (src : Operand)
 | adox (dst : Operand) (src : Operand)
+| sub (dst: Operand) (src: Operand)
 | jnz (target : Label)
+| jz (target : Label)
 deriving Repr
 
 def Instr.is_ctrl
-  | Instr.jnz _ => true
+  | Instr.jnz _
+  | Instr.jz _ => true
   | _ => false
 
 -- HELPERS
@@ -153,6 +156,8 @@ def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 
 -- This function intentionally does not increase the pc, callers will increase
 -- it (always by 1).
+-- The reference semantics are taken from https://www.felixcloutier.com/x86/,
+-- which itself is just extracted from https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
 def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m MachineState := do
   match i with
   | .mov dst src =>
@@ -192,16 +197,47 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       -- Semantics say that if hi and lo are aliased, the value written is hi
       let s ← set_reg s lo (UInt64.ofNat result)
       set_reg s hi (UInt64.ofNat (result >>> 64))
+
+  | .sub dst src =>
+      let src ← eval_operand s src
+      if src.toNat >= 2^31 then
+        throw "TODO: sign-extension"
+      else
+        let dst1 ← eval_reg_or_mem s dst
+        -- "The SUB instruction... sets the OF and CF flags to indicate an
+        -- overflow in the signed or unsigned result, respectively. The SF flag
+        -- indicates the sign of the signed result."
+        --
+        -- CF: interpret the operands as unsigned (toNat), then check for
+        -- overflow (CF). Checking for overflow is done by converting to Int,
+        -- since subtraction on Nats clamps to 0.
+        let res := (Int.ofNat dst1.toNat) - (Int.ofNat src.toNat)
+        let cf := res < 0
+        -- OF: interpret the operands as signed, then check for overflow.
+        let of := dst1.toInt64.toInt - src.toInt64.toInt >= 2^64
+        -- ZF: result equals 0?
+        let zf := res = 0
+        let s ← set_reg_or_mem s dst (UInt64.ofInt res)
+        pure { s with flags := { zf, of, cf }}
+
+
   | _ => throw "unsupported non-control instruction {repr i}"
+
+def jump_if [Monad m] [MonadExcept String m] (s: MachineState) (b: Bool) (rip: Nat): m MachineState := do
+  if b then
+    pure { s with rip }
+  else
+    pure (next s)
+
 
 def ctrl [Monad m] [MonadExcept String m] (s: MachineState) (lookup: Label → m Nat) (i: Instr) : m MachineState := do
   match i with
   | .jnz l =>
-      if !s.flags.zf then
-        let rip ← lookup l
-        pure { s with rip }
-      else
-        pure (next s)
+      let rip ← lookup l
+      jump_if s (!s.flags.zf) rip
+  | .jz l =>
+      let rip ← lookup l
+      jump_if s s.flags.zf rip
   | _ => throw "unsupported control instruction {repr i}"
 
 abbrev Program := List (Option Label × Instr)
@@ -251,6 +287,7 @@ theorem step_cps {p : Program} (post: Post) (initial: MachineState):
 
 -- TEST
 
+-- Example 1: single step of execution
 def p1: Program := [
   (.none, .mov (.reg .rax) (.imm 1)),
 ]
@@ -260,18 +297,42 @@ example: @ExceptCpsT.runK Id Prop String MachineState (eval1 p1 {}) "" (fun s =>
   simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind]
 
 def p2: Program := [
-  (.none, .mov (.reg .rax) (.imm 1)),
-  (.none, .mov (.reg .rax) (.imm 2)),
+  (.some "start", .mov (.reg .rax) (.imm 1)),
+  (.none,         .jz "start"),
+  (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
+-- Example 2: stepping through both straightline and control instructions
 example: eventually p2 (fun s => s.regs.rax = 2) {} := by
   simp [p2]
+
   apply step_cps
   simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind]
+  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next]
+
   apply step_cps
   simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind]
+  simp [ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next]
+
+  apply step_cps
+  simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
+  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next]
+
   apply eventually.done
   simp
 
+-- Example 3: a loop
+def p3: Program := [
+  (.none,         .mov (.reg .rbx) (.imm 4)),                 -- rbx: loop counter = 4
+  (.none,         .mov (.reg .rdx) (.imm 2)),                 -- rdx: current result = 2
+  (.some "start", .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)), -- rdx := rdx * rdx
+  (.none,         .sub (.reg .rbx) (.imm 1)),                 -- rbx -= 1
+  (.none,         .jnz "start")
+  -- result is 2^16, in rdx
+]
+
+/- theorem loop_intro (invariant: Post) (initial: MachineState): -/
+/-   invariant initial ∧ eventually p -/ 
+
+/- example: eventually p3 (fun s => s.regs.rdx = 2^16) {} := by -/
+/-   sorry -/
