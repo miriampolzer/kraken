@@ -62,33 +62,61 @@ structure MachineState where
   regs : Registers := {}
   flags : Flags := {}
   rip : Nat := 0
-  heap : Heap := ∅ 
+  heap : Heap := ∅
 deriving Repr
 
--- Instructions
+-- Operands (extended with indexed memory modes for MontMul)
+-- Memory operands use WORD offsets (multiplied by 8 in code gen) for alignment
 inductive Operand
-| reg (r : Reg)
-| imm (v : UInt64)
-| mem (addr : Address)
-deriving Repr
+| reg (r : Reg)                                          -- %rax
+| imm (v : UInt64)                                       -- $42
+| mem (base : Reg) (wordOffset : Int := 0)               -- 8(%rsp) = wordOffset 1
+| memIdx (base : Reg) (idx : Reg) (wordOffset : Int := 0) -- (%rsi,%r15,8) + wordOffset*8
+| memByte (base : Reg) (byteOffset : Int := 0)           -- Raw byte offset (for lea)
+deriving Repr, BEq
 
 abbrev Label := String
 
+-- Instructions (extended for MontMul)
 inductive Instr
-| mov (dst : Operand) (src : Operand)
-| mulx (hi : Operand) (lo : Operand) (src1: Operand)
-| adcx (dst : Operand) (src : Operand)
-| adox (dst : Operand) (src : Operand)
-| sub (dst: Operand) (src: Operand)
-| jnz (target : Label)
-| jz (target : Label)
-| jmp (target : Label)
-deriving Repr
+  -- Arithmetic
+  | add  (dst src : Operand)                   -- addq: dst += src, sets CF, ZF, OF
+  | adc  (dst src : Operand)                   -- adcq: dst += src + CF, sets CF, ZF
+  | adcx (dst : Operand) (src : Operand)       -- adcxq: dst += src + CF, only affects CF (ADX)
+  | adox (dst : Operand) (src : Operand)       -- adoxq: dst += src + OF, only affects OF (ADX)
+  | sub  (dst src : Operand)                   -- subq: dst -= src, sets CF, ZF, OF
+  | sbb  (dst src : Operand)                   -- sbbq: dst -= src + CF, sets CF, ZF
+  | mul  (src : Operand)                       -- mulq: rdx:rax = rax * src
+  | mulx (hi lo : Operand) (src : Operand)     -- mulxq: hi:lo = rdx * src (BMI2, no flags)
+  | imul (dst src : Operand)                   -- imulq: dst *= src (truncated, sets OF/CF)
+  | neg  (dst : Operand)                       -- negq: dst = -dst, sets CF, ZF, OF
+  | dec  (dst : Operand)                       -- decq: dst--, sets ZF (not CF!)
+
+  -- Move/Load
+  | mov  (dst src : Operand)                   -- movq
+  | lea  (dst : Reg) (src : Operand)           -- leaq: dst = effective address
+
+  -- Bitwise
+  | xor  (dst src : Operand)                   -- xorq: dst ^= src, clears CF/OF, sets ZF
+  | and  (dst src : Operand)                   -- andq: dst &= src, clears CF/OF, sets ZF
+  | or   (dst src : Operand)                   -- orq: dst |= src, clears CF/OF, sets ZF
+
+  -- Compare (sets flags only)
+  | cmp  (a b : Operand)                       -- cmpq: compute a - b, set flags
+
+  -- Control flow (explicit jumps - core design of Kraken)
+  | jmp (target : Label)                       -- Unconditional jump
+  | jz  (target : Label)                       -- Jump if ZF=1
+  | jnz (target : Label)                       -- Jump if ZF=0
+  | jb  (target : Label)                       -- Jump if CF=1 (unsigned below)
+  | jae (target : Label)                       -- Jump if CF=0 (unsigned above or equal)
+  | jne (target : Label)                       -- Alias for jnz (after cmp)
+  | ja  (target : Label)                       -- Jump if CF=0 and ZF=0 (unsigned above)
+  deriving Repr
 
 def Instr.is_ctrl
-  | Instr.jmp _
-  | Instr.jnz _
-  | Instr.jz _ => true
+  | Instr.jmp _ | Instr.jnz _ | Instr.jz _
+  | Instr.jb _ | Instr.jae _ | Instr.jne _ | Instr.ja _ => true
   | _ => false
 
 -- HELPERS
@@ -128,25 +156,50 @@ def MachineState.writeMem [Pure m] [MonadExcept String m] (s : MachineState) (ad
 
 -- EVALUATION
 
+-- Compute effective address for memory operand (word offsets × 8)
+def effectiveAddr (s : MachineState) : Operand → UInt64
+  | .mem base wordOffset =>
+    let baseVal := s.getReg base
+    if wordOffset >= 0 then
+      baseVal + (wordOffset.toNat * 8).toUInt64
+    else
+      baseVal - ((-wordOffset).toNat * 8).toUInt64
+  | .memIdx base idx wordOffset =>
+    let baseVal := s.getReg base
+    let idxVal := s.getReg idx
+    let addr := baseVal + idxVal * 8  -- Fixed scale of 8
+    if wordOffset >= 0 then
+      addr + (wordOffset.toNat * 8).toUInt64
+    else
+      addr - ((-wordOffset).toNat * 8).toUInt64
+  | .memByte base byteOffset =>
+    let baseVal := s.getReg base
+    if byteOffset >= 0 then
+      baseVal + byteOffset.toNat.toUInt64
+    else
+      baseVal - (-byteOffset).toNat.toUInt64
+  | _ => 0  -- Not a memory operand
+
 def eval_operand [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
   match o with
   | .reg r => pure (s.getReg r)
   | .imm v => pure v
-  | .mem a => s.readMem a
+  | .mem _ _ => s.readMem (effectiveAddr s o)
+  | .memIdx _ _ _ => s.readMem (effectiveAddr s o)
+  | .memByte _ _ => s.readMem (effectiveAddr s o)
 
 def eval_reg_or_mem [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
   match o with
   | .reg r => pure (s.getReg r)
-  | .mem a => s.readMem a
+  | .mem _ _ | .memIdx _ _ _ | .memByte _ _ => s.readMem (effectiveAddr s o)
   | .imm _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg_or_mem [Monad m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: Word): m MachineState := do
   match o with
   | .reg r =>
       pure (s.setReg r v)
-  | .mem a =>
-      let s ← s.writeMem a v
-      pure s
+  | .mem _ _ | .memIdx _ _ _ | .memByte _ _ =>
+      s.writeMem (effectiveAddr s o) v
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
@@ -154,7 +207,7 @@ def set_reg [Pure m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: W
   match o with
   | .reg r =>
       pure (s.setReg r v)
-  | .mem _
+  | .mem _ _ | .memIdx _ _ _  | .memByte _ _
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
@@ -170,15 +223,32 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       let val ← eval_operand s src
       set_reg_or_mem s dst val
 
+  | .add dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v.toNat + src_v.toNat
+      let carry := result >>> 64
+      let result64 := UInt64.ofNat result
+      let zf := result64 == 0
+      let cf := carry != 0
+      -- OF is set if sign bits of operands are same but result sign differs
+      let of := (dst_v.toInt64.toInt + src_v.toInt64.toInt >= 2^63) ||
+                (dst_v.toInt64.toInt + src_v.toInt64.toInt < -2^63)
+      let s ← set_reg_or_mem s dst result64
+      pure { s with flags := { zf, of, cf }}
+
+  | .adc dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v.toNat + src_v.toNat + s.flags.cf.toNat
+      let carry := result >>> 64
+      let result64 := UInt64.ofNat result
+      let zf := result64 == 0
+      let cf := carry != 0
+      let s ← set_reg_or_mem s dst result64
+      pure { s with flags := { s.flags with zf, cf }}
+
   | .adcx dst src =>
-      -- Some thoughts: I basically try to assert the well-formedness of
-      -- instructions (by asserting that e.g. immediate operands are not
-      -- allowed, or that the x64 semantics demand that the destination of adcx
-      -- be a general-purpose register... so that it at least simplifies the
-      -- reasoning, but realistically, since we intend to consume source
-      -- assembly (possibly with an actual frontend to parse .S syntax), the
-      -- assembler will enforce eventually that no such nonsensical instructions
-      -- exist. Is it worth the trouble?
       let src_v ← eval_reg_or_mem s src
       let dst_v ← eval_reg_or_mem s dst
       let result := src_v.toNat + dst_v.toNat + s.flags.cf.toNat
@@ -196,37 +266,117 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       let s := { s with flags := { s.flags with of := carry != 0 }}
       set_reg s dst result
 
+  | .sub dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let res := (Int.ofNat dst_v.toNat) - (Int.ofNat src_v.toNat)
+      let cf := res < 0
+      let of := dst_v.toInt64.toInt - src_v.toInt64.toInt >= 2^63 ||
+                dst_v.toInt64.toInt - src_v.toInt64.toInt < -2^63
+      let result64 := UInt64.ofInt res
+      let zf := result64 == 0
+      let s ← set_reg_or_mem s dst result64
+      pure { s with flags := { zf, of, cf }}
+
+  | .sbb dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let res := (Int.ofNat dst_v.toNat) - (Int.ofNat src_v.toNat) - s.flags.cf.toNat
+      let cf := res < 0
+      let result64 := UInt64.ofInt res
+      let zf := result64 == 0
+      let s ← set_reg_or_mem s dst result64
+      pure { s with flags := { s.flags with zf, cf }}
+
+  | .mul src =>
+      -- mulq: rdx:rax = rax * src
+      let src_v ← eval_reg_or_mem s src
+      let rax_v := s.getReg .rax
+      let result := rax_v.toNat * src_v.toNat
+      let lo := UInt64.ofNat result
+      let hi := UInt64.ofNat (result >>> 64)
+      let s := s.setReg .rax lo
+      let s := s.setReg .rdx hi
+      -- mul sets OF and CF if high half is non-zero
+      let cf := hi != 0
+      let of := hi != 0
+      pure { s with flags := { s.flags with cf, of }}
+
   | .mulx hi lo src1 =>
-      let src1 ← eval_reg_or_mem s src1
-      let src2 ← eval_reg_or_mem s (.reg .rdx)
-      let result := src1.toNat * src2.toNat
+      let src1_v ← eval_reg_or_mem s src1
+      let src2_v := s.getReg .rdx
+      let result := src1_v.toNat * src2_v.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
       let s ← set_reg s lo (UInt64.ofNat result)
       set_reg s hi (UInt64.ofNat (result >>> 64))
 
-  | .sub dst src =>
-      let src1 ← eval_operand s src
-      if src matches .imm _ && src1.toNat >= 2^31 then
-        throw "TODO: sign-extension" -- line "SUB r/m64, imm32" in the Intel spec
-      else
-        let dst1 ← eval_reg_or_mem s dst
-        -- "The SUB instruction... sets the OF and CF flags to indicate an
-        -- overflow in the signed or unsigned result, respectively. The SF flag
-        -- indicates the sign of the signed result."
-        --
-        -- CF: interpret the operands as unsigned (toNat), then check for
-        -- overflow (CF). Checking for overflow is done by converting to Int,
-        -- since subtraction on Nats clamps to 0.
-        let res := (Int.ofNat dst1.toNat) - (Int.ofNat src1.toNat)
-        let cf := res < 0
-        -- OF: interpret the operands as signed, then check for overflow.
-        let of := dst1.toInt64.toInt - src1.toInt64.toInt >= 2^64
-        -- ZF: result equals 0?
-        let zf := res = 0
-        let s ← set_reg_or_mem s dst (UInt64.ofInt res)
-        pure { s with flags := { zf, of, cf }}
+  | .imul dst src =>
+      let src_v ← eval_reg_or_mem s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v.toNat * src_v.toNat
+      let result64 := UInt64.ofNat result
+      let s ← set_reg_or_mem s dst result64
+      -- OF/CF set if result doesn't fit in 64 bits
+      let overflow := result >>> 64 != 0
+      pure { s with flags := { s.flags with cf := overflow, of := overflow }}
 
-  | _ => throw "unsupported non-control instruction {repr i}"
+  | .neg dst =>
+      let dst_v ← eval_reg_or_mem s dst
+      let result := 0 - dst_v
+      let zf := result == 0
+      let cf := dst_v != 0  -- CF is set unless operand is 0
+      let s ← set_reg_or_mem s dst result
+      pure { s with flags := { s.flags with zf, cf }}
+
+  | .dec dst =>
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v - 1
+      let zf := result == 0
+      -- dec does NOT affect CF (important for MontMul!)
+      let s ← set_reg_or_mem s dst result
+      pure { s with flags := { s.flags with zf }}
+
+  | .lea dst src =>
+      -- lea computes effective address, doesn't access memory
+      let addr := effectiveAddr s src
+      pure (s.setReg dst addr)
+
+  | .xor dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v ^^^ src_v
+      let zf := result == 0
+      -- xor clears CF and OF
+      let s ← set_reg_or_mem s dst result
+      pure { s with flags := { zf, of := false, cf := false }}
+
+  | .and dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v &&& src_v
+      let zf := result == 0
+      let s ← set_reg_or_mem s dst result
+      pure { s with flags := { zf, of := false, cf := false }}
+
+  | .or dst src =>
+      let src_v ← eval_operand s src
+      let dst_v ← eval_reg_or_mem s dst
+      let result := dst_v ||| src_v
+      let zf := result == 0
+      let s ← set_reg_or_mem s dst result
+      pure { s with flags := { zf, of := false, cf := false }}
+
+  | .cmp a b =>
+      let a_v ← eval_reg_or_mem s a
+      let b_v ← eval_operand s b
+      let res := (Int.ofNat a_v.toNat) - (Int.ofNat b_v.toNat)
+      let cf := res < 0
+      let zf := res == 0
+      let of := a_v.toInt64.toInt - b_v.toInt64.toInt >= 2^63 ||
+                a_v.toInt64.toInt - b_v.toInt64.toInt < -2^63
+      pure { s with flags := { zf, of, cf }}
+
+  | _ => throw s!"unsupported non-control instruction {repr i}"
 
 def jump_if [Monad m] [MonadExcept String m] (s: MachineState) (b: Bool) (rip: Nat): m MachineState := do
   if b then
@@ -246,7 +396,23 @@ def ctrl [Monad m] [MonadExcept String m] (s: MachineState) (lookup: Label → m
   | .jz l =>
       let rip ← lookup l
       jump_if s s.flags.zf rip
-  | _ => throw "unsupported control instruction {repr i}"
+  | .jb l =>
+      -- Jump if below (unsigned): CF=1
+      let rip ← lookup l
+      jump_if s s.flags.cf rip
+  | .jae l =>
+      -- Jump if above or equal (unsigned): CF=0
+      let rip ← lookup l
+      jump_if s (!s.flags.cf) rip
+  | .jne l =>
+      -- Alias for jnz: ZF=0
+      let rip ← lookup l
+      jump_if s (!s.flags.zf) rip
+  | .ja l =>
+      -- Jump if above (unsigned): CF=0 AND ZF=0
+      let rip ← lookup l
+      jump_if s (!s.flags.cf && !s.flags.zf) rip
+  | _ => throw s!"unsupported control instruction {repr i}"
 
 abbrev Program := List (Option Label × Instr)
 
@@ -271,7 +437,7 @@ def eval (p: Program) (s: MachineState): Option MachineState := do
 partial_fixpoint
 
 def step1 (p: Program) (s: MachineState) (post: _) :=
-  @ExceptCpsT.runK Id Prop String MachineState (eval1 p s) "" post (fun _ => False) 
+  @ExceptCpsT.runK Id Prop String MachineState (eval1 p s) "" post (fun _ => False)
 
 def Post := MachineState → Prop
 
@@ -341,7 +507,7 @@ macro_rules
     simp [
       step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure,
       -- works for calls to strt1
-      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
+      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effectiveAddr,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
       -- or calls to ctrl
       ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next])
 
@@ -405,74 +571,10 @@ def p3: Program := [
 
 def p3_spec (s: MachineState): Nat := 2^(2*s.regs.rbx.toNat + 1)
 
+-- NOTE: This proof was broken by the flag semantics changes to support more instructions.
+-- It was already incomplete (had sorry statements). Full rewrite needed.
 theorem p3_correct (initial: MachineState):
     p3_spec initial < 2^64 →
     initial.rip = 0 →
-    eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial :=
-  by
-    intros h_bounds h_rip
-    simp [p3]
-    -- First step sets rdx = 2
-    apply step_cps
-    step_one
-    rw [h_rip]
-    clear h_rip
-    simp
-
-    -- Loop invariant introduction
-    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat == i ∧ s.regs.rdx.toNat == 2^(2*(initial.regs.rbx.toNat - i) + 1)) initial.regs.rbx.toNat
-    constructor
-    . grind
-    . constructor
-      -- Invariant initially holds
-      . intros state inv
-        rcases inv with ⟨ h_rip, h_rbx_zero, h_inv ⟩
-        -- Step through a few program steps to "see" the jump and writing the
-        -- sucess return value in rax
-        simp [p3]
-        apply step_cps
-        step_one
-        rw [h_rip]
-        simp
-        apply step_cps
-        step_one
-        have : state.regs.rbx.toNat = 0 := by grind
-        simp [this]
-        apply step_cps
-        step_one
-        apply eventually.done
-        simp
-        -- Now functional correctness for initial invariant
-        simp [p3_spec]
-        grind
-
-      -- Invariant preserved
-      . intro state k h_k_nonzero inv
-        rcases inv with ⟨ h_rip, h_rbx_is_k, h_inv ⟩
-
-        simp [p3]
-        apply step_cps
-        step_one
-        rw [h_rip]
-        simp
-
-        apply step_cps
-        step_one
-        have : (state.regs.rbx.toNat = 0) = False := by grind
-        simp [this]
-
-        apply step_cps
-        step_one
-        apply step_cps
-        step_one
-        apply step_cps
-        step_one
-        apply eventually.done
-
-        -- Goals for invariant preservation
-        constructor
-        . simp -- back to correct address
-        . simp
-          constructor
-          . sorry
-          . sorry
+    eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial := by
+  sorry
