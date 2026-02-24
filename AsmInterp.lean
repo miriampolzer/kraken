@@ -422,9 +422,7 @@ theorem p3_correct (initial: MachineState):
     -- Loop invariant introduction
     apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat == i ∧ s.regs.rdx.toNat == 2^(2*(initial.regs.rbx.toNat - i) + 1)) initial.regs.rbx.toNat
     constructor
-    . constructor
-      . grind
-      . grind
+    . grind
     . constructor
       -- Invariant initially holds
       . intros state inv
@@ -446,7 +444,7 @@ theorem p3_correct (initial: MachineState):
         simp
         -- Now functional correctness for initial invariant
         simp [p3_spec]
-        sorry
+        grind
 
       -- Invariant preserved
       . intro state k h_k_nonzero inv
