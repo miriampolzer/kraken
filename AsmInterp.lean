@@ -54,12 +54,16 @@ abbrev Address := UInt64
 abbrev Word := UInt64
 abbrev Heap := Std.ExtHashMap Address Word
 
+instance : Repr Heap where
+  reprPrec _ _ := "<opaque memory>"
+
 -- Machine State
 structure MachineState where
   regs : Registers := {}
   flags : Flags := {}
   rip : Nat := 0
   heap : Heap := ∅ 
+deriving Repr
 
 -- Instructions
 inductive Operand
@@ -78,9 +82,11 @@ inductive Instr
 | sub (dst: Operand) (src: Operand)
 | jnz (target : Label)
 | jz (target : Label)
+| jmp (target : Label)
 deriving Repr
 
 def Instr.is_ctrl
+  | Instr.jmp _
   | Instr.jnz _
   | Instr.jz _ => true
   | _ => false
@@ -199,9 +205,9 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       set_reg s hi (UInt64.ofNat (result >>> 64))
 
   | .sub dst src =>
-      let src ← eval_operand s src
-      if src.toNat >= 2^31 then
-        throw "TODO: sign-extension"
+      let src1 ← eval_operand s src
+      if src matches .imm _ && src1.toNat >= 2^31 then
+        throw "TODO: sign-extension" -- line "SUB r/m64, imm32" in the Intel spec
       else
         let dst1 ← eval_reg_or_mem s dst
         -- "The SUB instruction... sets the OF and CF flags to indicate an
@@ -211,15 +217,14 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
         -- CF: interpret the operands as unsigned (toNat), then check for
         -- overflow (CF). Checking for overflow is done by converting to Int,
         -- since subtraction on Nats clamps to 0.
-        let res := (Int.ofNat dst1.toNat) - (Int.ofNat src.toNat)
+        let res := (Int.ofNat dst1.toNat) - (Int.ofNat src1.toNat)
         let cf := res < 0
         -- OF: interpret the operands as signed, then check for overflow.
-        let of := dst1.toInt64.toInt - src.toInt64.toInt >= 2^64
+        let of := dst1.toInt64.toInt - src1.toInt64.toInt >= 2^64
         -- ZF: result equals 0?
         let zf := res = 0
         let s ← set_reg_or_mem s dst (UInt64.ofInt res)
         pure { s with flags := { zf, of, cf }}
-
 
   | _ => throw "unsupported non-control instruction {repr i}"
 
@@ -232,6 +237,9 @@ def jump_if [Monad m] [MonadExcept String m] (s: MachineState) (b: Bool) (rip: N
 
 def ctrl [Monad m] [MonadExcept String m] (s: MachineState) (lookup: Label → m Nat) (i: Instr) : m MachineState := do
   match i with
+  | .jmp l =>
+      let rip ← lookup l
+      jump_if s True rip
   | .jnz l =>
       let rip ← lookup l
       jump_if s (!s.flags.zf) rip
@@ -267,14 +275,15 @@ def step1 (p: Program) (s: MachineState) (post: _) :=
 
 def Post := MachineState → Prop
 
-inductive eventually (p: Program): Post → Post
-  | done post initial:
-      post initial →
-      eventually _ post initial
-  | step post initial (midset: Post):
-      step1 p initial midset →
-      (forall (mid: MachineState), midset mid → eventually _ post mid) →
-      eventually _ post initial
+inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
+  | done (initial: MachineState):
+      p initial →
+      eventually _ p initial
+  | step (initial: MachineState):
+      (mid_p: Post) ->
+      step1 prog initial mid_p →
+      (forall (mid: MachineState), mid_p mid → eventually _ p mid) →
+      eventually _ p initial
 
 theorem step_cps {p : Program} (post: Post) (initial: MachineState):
   step1 p initial (fun mid => eventually p post mid) → eventually p post initial :=
@@ -282,8 +291,31 @@ theorem step_cps {p : Program} (post: Post) (initial: MachineState):
     intro
     apply eventually.step
     <;> try assumption
-    intro
-    simp
+    grind
+
+theorem eventually_trans (program: Program) (p q: Post) (initial: MachineState)
+  (e: eventually program p initial)
+  (h: forall s, p s → eventually program q s):
+    eventually program q initial
+  := by
+    induction e with
+    | done =>
+        grind
+    | step initial mid_p step pred ind_h =>
+        apply eventually.step
+        <;> assumption
+
+theorem eventually_weaken (program: Program) (p q: Post)
+  (h: forall s, p s → q s):
+    eventually program p initial → eventually program q initial
+  := by
+    intro hp
+    induction ih: hp
+    . apply eventually.done
+      grind
+    . apply eventually.step
+      <;> try assumption
+      grind
 
 -- TEST
 
@@ -302,37 +334,147 @@ def p2: Program := [
   (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
+syntax "step_one" : tactic
+macro_rules
+  | `(tactic|step_one) =>
+  `(tactic|
+    simp [
+      step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure,
+      -- works for calls to strt1
+      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
+      -- or calls to ctrl
+      ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next])
+
 -- Example 2: stepping through both straightline and control instructions
 example: eventually p2 (fun s => s.regs.rax = 2) {} := by
   simp [p2]
 
   apply step_cps
-  simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next]
+  step_one
 
   apply step_cps
-  simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next]
+  step_one
 
   apply step_cps
-  simp [step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next]
+  step_one
 
   apply eventually.done
   simp
 
+-- A loop down to 0
+theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invariant: Nat → Post) (n: Nat):
+  -- if:
+  -- invariant holds before entering the loop
+  invariant n initial ∧
+  -- final iteration allows proving `post`
+  (forall state, invariant 0 state → eventually prog post state) ∧
+  -- while iterating, we eventually re-establish the invariant
+  (forall state k, k != 0 → invariant k state → eventually prog (invariant (k - 1)) state) →
+  -- then: we can prove the post
+  eventually prog post initial
+  := by
+    intro misc
+    rcases misc with ⟨ initial_invariant, case_zero, case_nonzero ⟩
+    if n = 0 then
+      apply case_zero
+      grind
+    else
+      apply eventually_trans prog (invariant (n - 1)) post
+      grind
+      intros srec _
+      apply reg_dec_loop prog post srec invariant (n - 1)
+      grind
+
 -- Example 3: a loop
 def p3: Program := [
-  (.none,         .mov (.reg .rbx) (.imm 4)),                 -- rbx: loop counter = 4
+  -- (.none,         .mov (.reg .rbx) (.imm 4)),                 -- rbx: loop counter = 4
   (.none,         .mov (.reg .rdx) (.imm 2)),                 -- rdx: current result = 2
-  (.some "start", .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)), -- rdx := rdx * rdx
+  (.some "start", .sub (.reg .rbx) (.imm 0)),                 -- TEST: zf = (rbx == 0)
+  (.none        , .jz "end"),                                 -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
+  (.none        , .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)), -- BODY: rdx := rdx * rdx
   (.none,         .sub (.reg .rbx) (.imm 1)),                 -- rbx -= 1
-  (.none,         .jnz "start")
+  (.none,         .jmp "start"),                              -- go back to test & loop body
+  (.some "end",   .mov (.reg .rax) (.imm 0)),                 -- meaningless -- just want the label to be well-defined
   -- result is 2^16, in rdx
 ]
 
-/- theorem loop_intro (invariant: Post) (initial: MachineState): -/
-/-   invariant initial ∧ eventually p -/ 
+-- Need to do something for when we have reached the end of the instruction list
+-- maybe a special state! Right now this returns `none` because we eventually
+-- hit the final instruction and then rip is out of bounds.
+#eval (eval p3 {})
 
-/- example: eventually p3 (fun s => s.regs.rdx = 2^16) {} := by -/
-/-   sorry -/
+def p3_spec (s: MachineState): Nat := 2^(2*s.regs.rbx.toNat + 1)
+
+theorem p3_correct (initial: MachineState):
+    p3_spec initial < 2^64 →
+    initial.rip = 0 →
+    eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial :=
+  by
+    intros h_bounds h_rip
+    simp [p3]
+    -- First step sets rdx = 2
+    apply step_cps
+    step_one
+    rw [h_rip]
+    clear h_rip
+    simp
+
+    -- Loop invariant introduction
+    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat == i ∧ s.regs.rdx.toNat == 2^(2*(initial.regs.rbx.toNat - i) + 1)) initial.regs.rbx.toNat
+    constructor
+    . constructor
+      . grind
+      . grind
+    . constructor
+      -- Invariant initially holds
+      . intros state inv
+        rcases inv with ⟨ h_rip, h_rbx_zero, h_inv ⟩
+        -- Step through a few program steps to "see" the jump and writing the
+        -- sucess return value in rax
+        simp [p3]
+        apply step_cps
+        step_one
+        rw [h_rip]
+        simp
+        apply step_cps
+        step_one
+        have : state.regs.rbx.toNat = 0 := by grind
+        simp [this]
+        apply step_cps
+        step_one
+        apply eventually.done
+        simp
+        -- Now functional correctness for initial invariant
+        simp [p3_spec]
+        sorry
+
+      -- Invariant preserved
+      . intro state k h_k_nonzero inv
+        rcases inv with ⟨ h_rip, h_rbx_is_k, h_inv ⟩
+
+        simp [p3]
+        apply step_cps
+        step_one
+        rw [h_rip]
+        simp
+
+        apply step_cps
+        step_one
+        have : (state.regs.rbx.toNat = 0) = False := by grind
+        simp [this]
+
+        apply step_cps
+        step_one
+        apply step_cps
+        step_one
+        apply step_cps
+        step_one
+        apply eventually.done
+
+        -- Goals for invariant preservation
+        constructor
+        . simp -- back to correct address
+        . simp
+          constructor
+          . sorry
+          . sorry
