@@ -353,7 +353,8 @@ example (s_old: MachineState) (pre: s_old.rip = 0 ∧ (s_old.getReg .rax).toNat 
     simp [p11]
     delta step1 ExceptCpsT.runK eval1 fetch bind pure -- ExceptCpsT.instMonad.toBind.1
     rw [h_pre]
-    delta List.findIdx? List.findIdx getElem? List.get?Internal
+    dsimp only [List.findIdx?,List.findIdx,getElem?,List.get?Internal]
+    dsimp only [Instr.is_ctrl]
     --
     sorry
 
