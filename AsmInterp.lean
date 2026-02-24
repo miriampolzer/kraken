@@ -113,47 +113,53 @@ def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
 def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
 
-def MachineState.readMem [Pure m] [MonadExcept String m] (s : MachineState) (addr : Address) : m Word :=
+class Throw α where
+  throw: String → α
+
+def throw [inst: Throw α] :=
+  inst.throw
+
+def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (ret: Word → α): α :=
+  if addr % 8 != 0 then
+    throw (s!"Out-of-bounds access (rip={repr s.rip})")
+  else
+    match s.heap[addr]? with
+    | .some v => ret v
+    | .none => throw (s!"Memory read but not written to (rip={repr s.rip}, addr={repr addr})")
+
+def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : Word) (ret: MachineState → α) : α :=
   if addr % 8 != 0 then
     throw s!"Out-of-bounds access (rip={repr s.rip})"
   else
-    s.heap[addr]?.except (s!"Memory read but not written to (rip={repr s.rip}, addr={repr addr})")
-
-def MachineState.writeMem [Pure m] [MonadExcept String m] (s : MachineState) (addr : Address) (val : Word) : m MachineState :=
-  if addr % 8 != 0 then
-    throw s!"Out-of-bounds access (rip={repr s.rip})"
-  else
-    pure { s with heap := s.heap.insert addr val }
-
+    ret { s with heap := s.heap.insert addr val }
 
 -- EVALUATION
 
-def eval_operand [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
+def eval_operand [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
-  | .reg r => pure (s.getReg r)
-  | .imm v => pure v
-  | .mem a => s.readMem a
+  | .reg r => ret (s.getReg r)
+  | .imm v => ret v
+  | .mem a => s.readMem a ret
 
-def eval_reg_or_mem [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
+def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
-  | .reg r => pure (s.getReg r)
-  | .mem a => s.readMem a
+  | .reg r => ret (s.getReg r)
+  | .mem a => s.readMem a ret
   | .imm _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
-def set_reg_or_mem [Monad m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: Word): m MachineState := do
+def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
   | .reg r =>
-      pure (s.setReg r v)
+      ret (s.setReg r v)
   | .mem a =>
-      let s ← s.writeMem a v
-      pure s
+      s.writeMem a v ret
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
-def set_reg [Pure m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: Word): m MachineState :=
+def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
   | .reg r =>
-      pure (s.setReg r v)
+      ret (s.setReg r v)
   | .mem _
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
@@ -164,11 +170,11 @@ def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 -- it (always by 1).
 -- The reference semantics are taken from https://www.felixcloutier.com/x86/,
 -- which itself is just extracted from https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
-def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m MachineState := do
+def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): α :=
   match i with
   | .mov dst src =>
-      let val ← eval_operand s src
-      set_reg_or_mem s dst val
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst val ret)
 
   | .adcx dst src =>
       -- Some thoughts: I basically try to assert the well-formedness of
@@ -179,37 +185,39 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       -- assembly (possibly with an actual frontend to parse .S syntax), the
       -- assembler will enforce eventually that no such nonsensical instructions
       -- exist. Is it worth the trouble?
-      let src_v ← eval_reg_or_mem s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s src (fun src_v  =>
+      eval_reg_or_mem s dst (fun dst_v  =>
       let result := src_v.toNat + dst_v.toNat + s.flags.cf.toNat
       let carry := result >>> 64
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with cf := carry != 0 }}
-      set_reg s dst result
+      set_reg s dst result ret))
 
   | .adox dst src =>
-      let src_v ← eval_reg_or_mem s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s src (fun src_v  =>
+      eval_reg_or_mem s dst (fun dst_v  =>
+      -- TODO: figure out how to make sure that this let-binding does not get
+      -- inlined, *unless* the right-hand side can be computed to a constant
       let result := src_v.toNat + dst_v.toNat + s.flags.of.toNat
       let carry := result >>> 64
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with of := carry != 0 }}
-      set_reg s dst result
+      set_reg s dst result ret))
 
   | .mulx hi lo src1 =>
-      let src1 ← eval_reg_or_mem s src1
-      let src2 ← eval_reg_or_mem s (.reg .rdx)
+      eval_reg_or_mem s src1 (fun src1  =>
+      eval_reg_or_mem s (.reg .rdx) (fun src2  =>
       let result := src1.toNat * src2.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
-      let s ← set_reg s lo (UInt64.ofNat result)
-      set_reg s hi (UInt64.ofNat (result >>> 64))
+      set_reg s lo (UInt64.ofNat result) (fun s  =>
+      set_reg s hi (UInt64.ofNat (result >>> 64)) ret)))
 
   | .sub dst src =>
-      let src1 ← eval_operand s src
+      eval_operand s src (fun src1  =>
       if src matches .imm _ && src1.toNat >= 2^31 then
         throw "TODO: sign-extension" -- line "SUB r/m64, imm32" in the Intel spec
       else
-        let dst1 ← eval_reg_or_mem s dst
+        eval_reg_or_mem s dst (fun dst1  =>
         -- "The SUB instruction... sets the OF and CF flags to indicate an
         -- overflow in the signed or unsigned result, respectively. The SF flag
         -- indicates the sign of the signed result."
@@ -223,55 +231,58 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
         let of := dst1.toInt64.toInt - src1.toInt64.toInt >= 2^64
         -- ZF: result equals 0?
         let zf := res = 0
-        let s ← set_reg_or_mem s dst (UInt64.ofInt res)
-        pure { s with flags := { zf, of, cf }}
+        set_reg_or_mem s dst (UInt64.ofInt res) (fun s  =>
+        ret { s with flags := { zf, of, cf }})))
 
-  | _ => throw "unsupported non-control instruction {repr i}"
+  | _ => throw s!"unsupported non-control instruction {repr i}"
 
-def jump_if [Monad m] [MonadExcept String m] (s: MachineState) (b: Bool) (rip: Nat): m MachineState := do
+def jump_if [Throw α] (s: MachineState) (b: Bool) (rip: Nat) (ret: MachineState → α): α :=
   if b then
-    pure { s with rip }
+    ret { s with rip }
   else
-    pure (next s)
+    ret (next s)
 
 
-def ctrl [Monad m] [MonadExcept String m] (s: MachineState) (lookup: Label → m Nat) (i: Instr) : m MachineState := do
+def ctrl [Throw α] (s: MachineState) (lookup: Label → (Nat → α) → α) (i: Instr) (ret: MachineState → α): α :=
   match i with
   | .jmp l =>
-      let rip ← lookup l
-      jump_if s True rip
+      lookup l (fun rip =>
+      jump_if s True rip ret)
   | .jnz l =>
-      let rip ← lookup l
-      jump_if s (!s.flags.zf) rip
+      lookup l (fun rip =>
+      jump_if s (!s.flags.zf) rip ret)
   | .jz l =>
-      let rip ← lookup l
-      jump_if s s.flags.zf rip
-  | _ => throw "unsupported control instruction {repr i}"
+      lookup l (fun rip =>
+      jump_if s s.flags.zf rip ret)
+  | _ => throw s!"unsupported control instruction {repr i}"
 
 abbrev Program := List (Option Label × Instr)
 
-def lookup [Pure m] [MonadExcept String m] (p: Program) (l: Label): m Nat :=
-  (p.findIdx? (fun (l', _) => l' = .some l)).except "Invalid label: {repr l}"
+def lookup [Throw α] (p: Program) (l: Label) (ret: Nat → α): α :=
+  match p.findIdx? (fun (l', _) => l' = .some l) with
+  | .some rip => ret rip
+  | .none => throw s!"Invalid label: {repr l}"
 
-def fetch [Pure m] [MonadExcept String m] (p: Program) (s: MachineState): m (Option Label × Instr) :=
-  p[s.rip]?.except "Impossible: PC outside of program bounds"
+def fetch [Throw α] (p: Program) (s: MachineState) (ret: (Option Label × Instr) → α): α :=
+  match p[s.rip]? with
+  | .some ins => ret ins
+  | .none => throw "Impossible: PC outside of program bounds"
 
-def eval1 [Monad m] [MonadExcept String m] (p: Program) (s: MachineState): m MachineState := do
-  let (_, i) ← fetch p s
-  if i.is_ctrl then
-    let s ← ctrl s (lookup p) i
-    pure s
-  else
-    let s ← strt1 s i
-    pure (next s)
+def eval1 [m: Throw α] (p: Program) (s: MachineState) (ret: MachineState → α): α :=
+  fetch p s (fun (_, i) =>
+    if i.is_ctrl then
+      ctrl s (lookup p) i ret
+    else
+      strt1 s i (fun s =>
+      ret (next s)))
 
 def eval (p: Program) (s: MachineState): Option MachineState := do
-  let s ← (eval1 (m:=Except String) p s).toOption
+  let s ← (eval1 (m:={ throw _ := Option.none }) p s) (fun s => .some s)
   eval p s
 partial_fixpoint
 
 def step1 (p: Program) (s: MachineState) (post: _) :=
-  @ExceptCpsT.runK Id Prop String MachineState (eval1 p s) "" post (fun _ => False) 
+  eval1 (m:={ throw _ := False }) p s post
 
 def Post := MachineState → Prop
 
@@ -303,14 +314,14 @@ theorem eventually_trans (program: Program) (p q: Post) (initial: MachineState)
         grind
     | step initial mid_p step pred ind_h =>
         apply eventually.step
-        <;> assumption
+        <;> assumption -- Q: why does `grind` not work here?
 
 theorem eventually_weaken (program: Program) (p q: Post)
   (h: forall s, p s → q s):
     eventually program p initial → eventually program q initial
   := by
     intro hp
-    induction ih: hp
+    induction ih: hp -- Q: why does this not work with `induction ... with`?
     . apply eventually.done
       grind
     . apply eventually.step
@@ -324,9 +335,27 @@ def p1: Program := [
   (.none, .mov (.reg .rax) (.imm 1)),
 ]
 
-example: @ExceptCpsT.runK Id Prop String MachineState (eval1 p1 {}) "" (fun s => s.regs.rax = 1) (fun _ => False) := by
-  simp [Instr.is_ctrl,p1,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind]
+-- Useful to debug the step_by tactic
+example: step1 p1 {} (fun s => s.regs.rax = 1) := by
+  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,set_reg_or_mem,next]
+  simp [MachineState.setReg,Registers.set]
+
+def p11: Program := [
+  (.none, .mov (.reg .rbx) (.imm 2)),    -- rbx := 2
+  (.none, .adcx (.reg .rax) (.reg .rbx)) -- rax := rax + rbx
+]
+
+example (s_old: MachineState) (pre: s_old.rip = 0 ∧ (s_old.getReg .rax).toNat + 2 < 2^64):
+    eventually p11 (fun s => (s.getReg .rax).toNat = (s_old.getReg .rax).toNat + 2) s_old
+  := by
+    rcases pre with ⟨ h_pre, h_bound ⟩
+    apply step_cps
+    simp [p11]
+    delta step1 ExceptCpsT.runK eval1 fetch bind pure -- ExceptCpsT.instMonad.toBind.1
+    rw [h_pre]
+    delta List.findIdx? List.findIdx getElem? List.get?Internal
+    --
+    sorry
 
 def p2: Program := [
   (.some "start", .mov (.reg .rax) (.imm 1)),
@@ -334,6 +363,17 @@ def p2: Program := [
   (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
+-- NOTES: why is the right way of doing this? Ideally, we would not ask to
+-- simplify anything that is not an internal definition, because it is not
+-- modular. Problematic things here include, e.g., List.findIdx? (what if the
+-- user uses this very function in their post-condition?).
+--
+-- Something equivalent to `match goal with` might work. Alternatively, we could
+-- have copies of definitions, e.g. `def my_findIdx := normalize List.findIdx?`.
+-- TODO: determine how to do that in Lean.
+--
+-- Furthermore, it would be nice to be able to specify that reducing e.g. a
+-- projector should only be done if the left-hand side is not a variable.
 syntax "step_one" : tactic
 macro_rules
   | `(tactic|step_one) =>
@@ -369,7 +409,7 @@ theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invar
   -- final iteration allows proving `post`
   (forall state, invariant 0 state → eventually prog post state) ∧
   -- while iterating, we eventually re-establish the invariant
-  (forall state k, k != 0 → invariant k state → eventually prog (invariant (k - 1)) state) →
+  (forall state k, k ≠ 0 → invariant k state → eventually prog (invariant (k - 1)) state) →
   -- then: we can prove the post
   eventually prog post initial
   := by
@@ -403,7 +443,7 @@ def p3: Program := [
 -- hit the final instruction and then rip is out of bounds.
 #eval (eval p3 {})
 
-def p3_spec (s: MachineState): Nat := 2^(2*s.regs.rbx.toNat + 1)
+def p3_spec (s: MachineState): Nat := 2^(2^s.regs.rbx.toNat)
 
 theorem p3_correct (initial: MachineState):
     p3_spec initial < 2^64 →
@@ -420,11 +460,11 @@ theorem p3_correct (initial: MachineState):
     simp
 
     -- Loop invariant introduction
-    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat == i ∧ s.regs.rdx.toNat == 2^(2*(initial.regs.rbx.toNat - i) + 1)) initial.regs.rbx.toNat
+    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat = i ∧ s.regs.rdx.toNat = 2^(2^(initial.regs.rbx.toNat - i))) initial.regs.rbx.toNat
     constructor
-    . grind
+    . simp
     . constructor
-      -- Invariant initially holds
+      -- Invariant at index 0 ==> post
       . intros state inv
         rcases inv with ⟨ h_rip, h_rbx_zero, h_inv ⟩
         -- Step through a few program steps to "see" the jump and writing the
