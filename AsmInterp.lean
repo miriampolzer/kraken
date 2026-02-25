@@ -1,13 +1,5 @@
 import Std
-
--- FIXME -- surely something like this is in Std?
-
-def Option.except [Pure m] [MonadExcept e m] (self: Option α) (err : e): m α :=
-  match self with
-  | .none => throw err
-  | .some v => pure v
-
--- STATE, INSTRUCTIONS, LABELS
+import Lean.Meta.Sym
 
 -- Registers Enumeration
 inductive Reg
@@ -71,6 +63,9 @@ inductive Operand
 | imm (v : UInt64)
 | mem (addr : Address)
 deriving Repr
+
+instance : Coe Reg Operand where coe := Operand.reg
+instance : Coe UInt64 Operand where coe := Operand.imm
 
 abbrev Label := String
 
@@ -332,7 +327,7 @@ theorem eventually_weaken (program: Program) (p q: Post)
 
 -- Example 1: single step of execution
 def p1: Program := [
-  (.none, .mov (.reg .rax) (.imm 1)),
+  (.none, .mov (Reg.rax) (1:UInt64)),
 ]
 
 -- Useful to debug the step_by tactic
@@ -345,18 +340,35 @@ def p11: Program := [
   (.none, .adcx (.reg .rax) (.reg .rbx)) -- rax := rax + rbx
 ]
 
-example (s_old: MachineState) (pre: s_old.rip = 0 ∧ (s_old.getReg .rax).toNat + 2 < 2^64):
-    eventually p11 (fun s => (s.getReg .rax).toNat = (s_old.getReg .rax).toNat + 2) s_old
+def sapply (lem : Name) (mvarId : MVarId) : SymM (List (MVarId)) := do
+  let rule ← mkBackwardRuleFromDecl lem
+  let .goals gs ← rule.apply mvarId | failure
+  return gs
+
+example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
+    eventually p11 (fun s => (s.getReg .rax).toNat = (s_old.getReg .rax).toNat + 2) {s_old with rip := 0}
   := by
-    rcases pre with ⟨ h_pre, h_bound ⟩
     apply step_cps
     simp [p11]
     delta step1 ExceptCpsT.runK eval1 fetch bind pure -- ExceptCpsT.instMonad.toBind.1
-    rw [h_pre]
     dsimp only [List.findIdx?,List.findIdx,getElem?,List.get?Internal]
     dsimp only [Instr.is_ctrl]
-    --
+    dsimp only [Bool.false_eq_true, ↓dreduceIte] -- special simproc for if https://github.com/leanprover/lean4/blob/master/src/Lean/Meta/Tactic/Simp/BuiltinSimprocs/Core.lean#L25-L40
+    delta next
+    delta strt1
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    delta eval_operand
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    delta set_reg_or_mem
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    run_tac liftMetaTactic (λ g => SymM.run (sapply ``step_cps g))
+    delta step1 eval1 fetch
+    dsimp (config := { beta := true, zeta := false, iota := false, proj := false, eta := false })
+    -- delta MachineState.setReg
+    -- delta Registers.set
+    -- dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
     sorry
+
 
 def p2: Program := [
   (.some "start", .mov (.reg .rax) (.imm 1)),
@@ -380,11 +392,11 @@ macro_rules
   | `(tactic|step_one) =>
   `(tactic|
     simp [
-      step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure,
+      step1,Instr.is_ctrl,eval1,fetch,ExceptCpsT.runK,bind,pure,
       -- works for calls to strt1
       strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
       -- or calls to ctrl
-      ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next])
+      ctrl,lookup,List.findIdx?,List.findIdx?.go,pure,bind,jump_if,next])
 
 -- Example 2: stepping through both straightline and control instructions
 example: eventually p2 (fun s => s.regs.rax = 2) {} := by
