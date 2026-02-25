@@ -1,13 +1,7 @@
 import Std
-
--- FIXME -- surely something like this is in Std?
-
-def Option.except [Pure m] [MonadExcept e m] (self: Option α) (err : e): m α :=
-  match self with
-  | .none => throw err
-  | .some v => pure v
-
--- STATE, INSTRUCTIONS, LABELS
+import Lean
+import Lean.Meta.Sym.Grind
+open Lean Meta Sym Elab Tactic
 
 -- Registers Enumeration
 inductive Reg
@@ -75,6 +69,11 @@ inductive Operand
 | memByte (base : Reg) (byteOffset : Int := 0)           -- Raw byte offset (for lea)
 deriving Repr, BEq
 
+instance : Coe Reg Operand where coe := Operand.reg
+instance : Coe UInt64 Operand where coe := Operand.imm
+attribute [coe] Operand.reg
+attribute [coe] Operand.imm
+
 abbrev Label := String
 
 -- Instructions (extended for MontMul)
@@ -141,18 +140,25 @@ def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
 def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
 
-def MachineState.readMem [Pure m] [MonadExcept String m] (s : MachineState) (addr : Address) : m Word :=
+class Throw α where
+  throw: String → α
+
+def throw [inst: Throw α] :=
+  inst.throw
+
+def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (ret: Word → α): α :=
+  if addr % 8 != 0 then
+    throw (s!"Out-of-bounds access (rip={repr s.rip})")
+  else
+    match s.heap[addr]? with
+    | .some v => ret v
+    | .none => throw (s!"Memory read but not written to (rip={repr s.rip}, addr={repr addr})")
+
+def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : Word) (ret: MachineState → α) : α :=
   if addr % 8 != 0 then
     throw s!"Out-of-bounds access (rip={repr s.rip})"
   else
-    s.heap[addr]?.except (s!"Memory read but not written to (rip={repr s.rip}, addr={repr addr})")
-
-def MachineState.writeMem [Pure m] [MonadExcept String m] (s : MachineState) (addr : Address) (val : Word) : m MachineState :=
-  if addr % 8 != 0 then
-    throw s!"Out-of-bounds access (rip={repr s.rip})"
-  else
-    pure { s with heap := s.heap.insert addr val }
-
+    ret { s with heap := s.heap.insert addr val }
 
 -- EVALUATION
 
@@ -180,33 +186,33 @@ def effectiveAddr (s : MachineState) : Operand → UInt64
       baseVal - (-byteOffset).toNat.toUInt64
   | _ => 0  -- Not a memory operand
 
-def eval_operand [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
+def eval_operand [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
-  | .reg r => pure (s.getReg r)
-  | .imm v => pure v
-  | .mem _ _ => s.readMem (effectiveAddr s o)
-  | .memIdx _ _ _ => s.readMem (effectiveAddr s o)
-  | .memByte _ _ => s.readMem (effectiveAddr s o)
+  | .reg r => ret (s.getReg r)
+  | .imm v => ret v
+  | .mem _ _ => s.readMem (effectiveAddr s o) ret
+  | .memIdx _ _ _ => s.readMem (effectiveAddr s o) ret
+  | .memByte _ _ => s.readMem (effectiveAddr s o) ret
 
-def eval_reg_or_mem [Pure m] [MonadExcept String m] (s : MachineState) (o : Operand) : m UInt64 :=
+def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
-  | .reg r => pure (s.getReg r)
-  | .mem _ _ | .memIdx _ _ _ | .memByte _ _ => s.readMem (effectiveAddr s o)
+  | .reg r => ret (s.getReg r)
+  | .mem _ _ | .memIdx _ _ _ | .memByte _ _ => s.readMem (effectiveAddr s o) ret
   | .imm _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
-def set_reg_or_mem [Monad m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: Word): m MachineState := do
+def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
   | .reg r =>
-      pure (s.setReg r v)
+      ret (s.setReg r v)
   | .mem _ _ | .memIdx _ _ _ | .memByte _ _ =>
-      s.writeMem (effectiveAddr s o) v
+      s.writeMem (effectiveAddr s o) v ret
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
-def set_reg [Pure m] [MonadExcept String m] (s: MachineState) (o: Operand) (v: Word): m MachineState :=
+def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
   | .reg r =>
-      pure (s.setReg r v)
+      ret (s.setReg r v)
   | .mem _ _ | .memIdx _ _ _  | .memByte _ _
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
@@ -217,15 +223,15 @@ def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 -- it (always by 1).
 -- The reference semantics are taken from https://www.felixcloutier.com/x86/,
 -- which itself is just extracted from https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
-def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m MachineState := do
+def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): α :=
   match i with
   | .mov dst src =>
-      let val ← eval_operand s src
-      set_reg_or_mem s dst val
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst val ret)
 
   | .add dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v.toNat + src_v.toNat
       let carry := result >>> 64
       let result64 := UInt64.ofNat result
@@ -234,63 +240,73 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       -- OF is set if sign bits of operands are same but result sign differs
       let of := (dst_v.toInt64.toInt + src_v.toInt64.toInt >= 2^63) ||
                 (dst_v.toInt64.toInt + src_v.toInt64.toInt < -2^63)
-      let s ← set_reg_or_mem s dst result64
-      pure { s with flags := { zf, of, cf }}
+      set_reg_or_mem s dst result64 (fun s =>
+      ret { s with flags := { zf, of, cf }})))
 
   | .adc dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v.toNat + src_v.toNat + s.flags.cf.toNat
       let carry := result >>> 64
       let result64 := UInt64.ofNat result
       let zf := result64 == 0
       let cf := carry != 0
-      let s ← set_reg_or_mem s dst result64
-      pure { s with flags := { s.flags with zf, cf }}
+      set_reg_or_mem s dst result64 (fun s =>
+      ret { s with flags := { s.flags with zf, cf }})))
 
   | .adcx dst src =>
-      let src_v ← eval_reg_or_mem s src
-      let dst_v ← eval_reg_or_mem s dst
+      -- Some thoughts: I basically try to assert the well-formedness of
+      -- instructions (by asserting that e.g. immediate operands are not
+      -- allowed, or that the x64 semantics demand that the destination of adcx
+      -- be a general-purpose register... so that it at least simplifies the
+      -- reasoning, but realistically, since we intend to consume source
+      -- assembly (possibly with an actual frontend to parse .S syntax), the
+      -- assembler will enforce eventually that no such nonsensical instructions
+      -- exist. Is it worth the trouble?
+      eval_reg_or_mem s src (fun src_v  =>
+      eval_reg_or_mem s dst (fun dst_v  =>
       let result := src_v.toNat + dst_v.toNat + s.flags.cf.toNat
       let carry := result >>> 64
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with cf := carry != 0 }}
-      set_reg s dst result
+      set_reg s dst result ret))
 
   | .adox dst src =>
-      let src_v ← eval_reg_or_mem s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s src (fun src_v  =>
+      eval_reg_or_mem s dst (fun dst_v  =>
+      -- TODO: figure out how to make sure that this let-binding does not get
+      -- inlined, *unless* the right-hand side can be computed to a constant
       let result := src_v.toNat + dst_v.toNat + s.flags.of.toNat
       let carry := result >>> 64
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with of := carry != 0 }}
-      set_reg s dst result
+      set_reg s dst result ret))
 
   | .sub dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let res := (Int.ofNat dst_v.toNat) - (Int.ofNat src_v.toNat)
       let cf := res < 0
       let of := dst_v.toInt64.toInt - src_v.toInt64.toInt >= 2^63 ||
                 dst_v.toInt64.toInt - src_v.toInt64.toInt < -2^63
       let result64 := UInt64.ofInt res
       let zf := result64 == 0
-      let s ← set_reg_or_mem s dst result64
-      pure { s with flags := { zf, of, cf }}
+      set_reg_or_mem s dst result64 (fun s =>
+      ret { s with flags := { zf, of, cf }})))
 
   | .sbb dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let res := (Int.ofNat dst_v.toNat) - (Int.ofNat src_v.toNat) - s.flags.cf.toNat
       let cf := res < 0
       let result64 := UInt64.ofInt res
       let zf := result64 == 0
-      let s ← set_reg_or_mem s dst result64
-      pure { s with flags := { s.flags with zf, cf }}
+      set_reg_or_mem s dst result64 (fun s =>
+      ret { s with flags := { s.flags with zf, cf }})))
 
   | .mul src =>
       -- mulq: rdx:rax = rax * src
-      let src_v ← eval_reg_or_mem s src
+      eval_reg_or_mem s src (fun src_v =>
       let rax_v := s.getReg .rax
       let result := rax_v.toNat * src_v.toNat
       let lo := UInt64.ofNat result
@@ -300,144 +316,147 @@ def strt1 [Monad m] [MonadExcept String m] (s : MachineState) (i : Instr) : m Ma
       -- mul sets OF and CF if high half is non-zero
       let cf := hi != 0
       let of := hi != 0
-      pure { s with flags := { s.flags with cf, of }}
+      ret { s with flags := { s.flags with cf, of }})
 
   | .mulx hi lo src1 =>
-      let src1_v ← eval_reg_or_mem s src1
+      eval_reg_or_mem s src1 (fun src1_v  =>
       let src2_v := s.getReg .rdx
       let result := src1_v.toNat * src2_v.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
-      let s ← set_reg s lo (UInt64.ofNat result)
-      set_reg s hi (UInt64.ofNat (result >>> 64))
+      set_reg s lo (UInt64.ofNat result) (fun s  =>
+      set_reg s hi (UInt64.ofNat (result >>> 64)) ret))
 
   | .imul dst src =>
-      let src_v ← eval_reg_or_mem s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v.toNat * src_v.toNat
       let result64 := UInt64.ofNat result
-      let s ← set_reg_or_mem s dst result64
       -- OF/CF set if result doesn't fit in 64 bits
       let overflow := result >>> 64 != 0
-      pure { s with flags := { s.flags with cf := overflow, of := overflow }}
+      set_reg_or_mem s dst result64 (fun s =>
+      ret { s with flags := { s.flags with cf := overflow, of := overflow }})))
 
   | .neg dst =>
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := 0 - dst_v
       let zf := result == 0
       let cf := dst_v != 0  -- CF is set unless operand is 0
-      let s ← set_reg_or_mem s dst result
-      pure { s with flags := { s.flags with zf, cf }}
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { s.flags with zf, cf }}))
 
   | .dec dst =>
-      let dst_v ← eval_reg_or_mem s dst
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v - 1
       let zf := result == 0
       -- dec does NOT affect CF (important for MontMul!)
-      let s ← set_reg_or_mem s dst result
-      pure { s with flags := { s.flags with zf }}
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { s.flags with zf }}))
 
   | .lea dst src =>
       -- lea computes effective address, doesn't access memory
       let addr := effectiveAddr s src
-      pure (s.setReg dst addr)
+      ret (s.setReg dst addr)
 
   | .xor dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v ^^^ src_v
       let zf := result == 0
       -- xor clears CF and OF
-      let s ← set_reg_or_mem s dst result
-      pure { s with flags := { zf, of := false, cf := false }}
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { zf, of := false, cf := false }})))
 
   | .and dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v &&& src_v
       let zf := result == 0
-      let s ← set_reg_or_mem s dst result
-      pure { s with flags := { zf, of := false, cf := false }}
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { zf, of := false, cf := false }})))
 
   | .or dst src =>
-      let src_v ← eval_operand s src
-      let dst_v ← eval_reg_or_mem s dst
+      eval_operand s src (fun src_v =>
+      eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v ||| src_v
       let zf := result == 0
-      let s ← set_reg_or_mem s dst result
-      pure { s with flags := { zf, of := false, cf := false }}
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { zf, of := false, cf := false }})))
 
   | .cmp a b =>
-      let a_v ← eval_reg_or_mem s a
-      let b_v ← eval_operand s b
+      eval_reg_or_mem s a (fun a_v =>
+      eval_operand s b (fun b_v =>
       let res := (Int.ofNat a_v.toNat) - (Int.ofNat b_v.toNat)
       let cf := res < 0
       let zf := res == 0
       let of := a_v.toInt64.toInt - b_v.toInt64.toInt >= 2^63 ||
                 a_v.toInt64.toInt - b_v.toInt64.toInt < -2^63
-      pure { s with flags := { zf, of, cf }}
+      ret { s with flags := { zf, of, cf }}))
 
   | _ => throw s!"unsupported non-control instruction {repr i}"
 
-def jump_if [Monad m] [MonadExcept String m] (s: MachineState) (b: Bool) (rip: Nat): m MachineState := do
+def jump_if [Throw α] (s: MachineState) (b: Bool) (rip: Nat) (ret: MachineState → α): α :=
   if b then
-    pure { s with rip }
+    ret { s with rip }
   else
-    pure (next s)
+    ret (next s)
 
 
-def ctrl [Monad m] [MonadExcept String m] (s: MachineState) (lookup: Label → m Nat) (i: Instr) : m MachineState := do
+def ctrl [Throw α] (s: MachineState) (lookup: Label → (Nat → α) → α) (i: Instr) (ret: MachineState → α): α :=
   match i with
   | .jmp l =>
-      let rip ← lookup l
-      jump_if s True rip
+      lookup l (fun rip =>
+      jump_if s True rip ret)
   | .jnz l =>
-      let rip ← lookup l
-      jump_if s (!s.flags.zf) rip
+      lookup l (fun rip =>
+      jump_if s (!s.flags.zf) rip ret)
   | .jz l =>
-      let rip ← lookup l
-      jump_if s s.flags.zf rip
+      lookup l (fun rip =>
+      jump_if s s.flags.zf rip ret)
   | .jb l =>
       -- Jump if below (unsigned): CF=1
-      let rip ← lookup l
-      jump_if s s.flags.cf rip
+      lookup l (fun rip =>
+      jump_if s s.flags.cf rip ret)
   | .jae l =>
       -- Jump if above or equal (unsigned): CF=0
-      let rip ← lookup l
-      jump_if s (!s.flags.cf) rip
+      lookup l (fun rip =>
+      jump_if s (!s.flags.cf) rip ret)
   | .jne l =>
       -- Alias for jnz: ZF=0
-      let rip ← lookup l
-      jump_if s (!s.flags.zf) rip
+      lookup l (fun rip =>
+      jump_if s (!s.flags.zf) rip ret)
   | .ja l =>
       -- Jump if above (unsigned): CF=0 AND ZF=0
-      let rip ← lookup l
-      jump_if s (!s.flags.cf && !s.flags.zf) rip
+      lookup l (fun rip =>
+      jump_if s (!s.flags.cf && !s.flags.zf) rip ret)
   | _ => throw s!"unsupported control instruction {repr i}"
 
 abbrev Program := List (Option Label × Instr)
 
-def lookup [Pure m] [MonadExcept String m] (p: Program) (l: Label): m Nat :=
-  (p.findIdx? (fun (l', _) => l' = .some l)).except "Invalid label: {repr l}"
+def lookup [Throw α] (p: Program) (l: Label) (ret: Nat → α): α :=
+  match p.findIdx? (fun (l', _) => l' = .some l) with
+  | .some rip => ret rip
+  | .none => throw s!"Invalid label: {repr l}"
 
-def fetch [Pure m] [MonadExcept String m] (p: Program) (s: MachineState): m (Option Label × Instr) :=
-  p[s.rip]?.except "Impossible: PC outside of program bounds"
+def fetch [Throw α] (p: Program) (s: MachineState) (ret: (Option Label × Instr) → α): α :=
+  match p[s.rip]? with
+  | .some ins => ret ins
+  | .none => throw "Impossible: PC outside of program bounds"
 
-def eval1 [Monad m] [MonadExcept String m] (p: Program) (s: MachineState): m MachineState := do
-  let (_, i) ← fetch p s
-  if i.is_ctrl then
-    let s ← ctrl s (lookup p) i
-    pure s
-  else
-    let s ← strt1 s i
-    pure (next s)
+def eval1 [m: Throw α] (p: Program) (s: MachineState) (ret: MachineState → α): α :=
+  fetch p s (fun (_, i) =>
+    if i.is_ctrl then
+      ctrl s (lookup p) i ret
+    else
+      strt1 s i (fun s =>
+      ret (next s)))
 
 def eval (p: Program) (s: MachineState): Option MachineState := do
-  let s ← (eval1 (m:=Except String) p s).toOption
+  let s ← (eval1 (m:={ throw _ := Option.none }) p s) (fun s => .some s)
   eval p s
 partial_fixpoint
 
 def step1 (p: Program) (s: MachineState) (post: _) :=
-  @ExceptCpsT.runK Id Prop String MachineState (eval1 p s) "" post (fun _ => False)
+  eval1 (m:={ throw _ := False }) p s post
 
 def Post := MachineState → Prop
 
@@ -469,14 +488,14 @@ theorem eventually_trans (program: Program) (p q: Post) (initial: MachineState)
         grind
     | step initial mid_p step pred ind_h =>
         apply eventually.step
-        <;> assumption
+        <;> assumption -- Q: why does `grind` not work here?
 
 theorem eventually_weaken (program: Program) (p q: Post)
   (h: forall s, p s → q s):
     eventually program p initial → eventually program q initial
   := by
     intro hp
-    induction ih: hp
+    induction ih: hp -- Q: why does this not work with `induction ... with`?
     . apply eventually.done
       grind
     . apply eventually.step
@@ -487,12 +506,48 @@ theorem eventually_weaken (program: Program) (p q: Post)
 
 -- Example 1: single step of execution
 def p1: Program := [
-  (.none, .mov (.reg .rax) (.imm 1)),
+  (.none, .mov (Reg.rax) (1:UInt64)),
 ]
 
-example: @ExceptCpsT.runK Id Prop String MachineState (eval1 p1 {}) "" (fun s => s.regs.rax = 1) (fun _ => False) := by
-  simp [Instr.is_ctrl,p1,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure]
-  simp [strt1,eval_operand,set_reg_or_mem,MachineState.setReg,next,Registers.set,pure,bind]
+-- Useful to debug the step_by tactic
+example: step1 p1 {} (fun s => s.regs.rax = 1) := by
+  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,set_reg_or_mem,next]
+  simp [MachineState.setReg,Registers.set]
+
+def p11: Program := [
+  (.none, .mov (.reg .rbx) (.imm 2)),    -- rbx := 2
+  (.none, .adcx (.reg .rax) (.reg .rbx)) -- rax := rax + rbx
+]
+
+def sapply (lem : Name) (mvarId : MVarId) : SymM (List (MVarId)) := do
+  let rule ← mkBackwardRuleFromDecl lem
+  let .goals gs ← rule.apply mvarId | failure
+  return gs
+
+example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
+    eventually p11 (fun s => (s.getReg .rax).toNat = (s_old.getReg .rax).toNat + 2) {s_old with rip := 0}
+  := by
+    apply step_cps
+    simp [p11]
+    delta step1 eval1 fetch bind pure
+    dsimp only [List.findIdx?,List.findIdx,getElem?,List.get?Internal]
+    dsimp only [Instr.is_ctrl]
+    dsimp only [Bool.false_eq_true, ↓dreduceIte] -- special simproc for if https://github.com/leanprover/lean4/blob/master/src/Lean/Meta/Tactic/Simp/BuiltinSimprocs/Core.lean#L25-L40
+    delta next
+    delta strt1
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    delta eval_operand
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    delta set_reg_or_mem
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    run_tac liftMetaTactic (λ g => SymM.run (sapply ``step_cps g))
+    delta step1 eval1 fetch
+    dsimp (config := { beta := true, zeta := false, iota := false, proj := false, eta := false })
+    delta MachineState.setReg
+    -- delta Registers.set
+    -- dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
+    sorry
+
 
 def p2: Program := [
   (.some "start", .mov (.reg .rax) (.imm 1)),
@@ -500,16 +555,27 @@ def p2: Program := [
   (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
+-- NOTES: why is the right way of doing this? Ideally, we would not ask to
+-- simplify anything that is not an internal definition, because it is not
+-- modular. Problematic things here include, e.g., List.findIdx? (what if the
+-- user uses this very function in their post-condition?).
+--
+-- Something equivalent to `match goal with` might work. Alternatively, we could
+-- have copies of definitions, e.g. `def my_findIdx := normalize List.findIdx?`.
+-- TODO: determine how to do that in Lean.
+--
+-- Furthermore, it would be nice to be able to specify that reducing e.g. a
+-- projector should only be done if the left-hand side is not a variable.
 syntax "step_one" : tactic
 macro_rules
   | `(tactic|step_one) =>
   `(tactic|
     simp [
-      step1,Instr.is_ctrl,eval1,fetch,Option.except,ExceptCpsT.runK,bind,pure,
+      step1,Instr.is_ctrl,eval1,fetch,
       -- works for calls to strt1
       strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effectiveAddr,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
       -- or calls to ctrl
-      ctrl,lookup,List.findIdx?,List.findIdx?.go,Option.except,pure,bind,jump_if,next])
+      ctrl,lookup,List.findIdx?,List.findIdx?.go,pure,bind,jump_if,next])
 
 -- Example 2: stepping through both straightline and control instructions
 example: eventually p2 (fun s => s.regs.rax = 2) {} := by
@@ -535,7 +601,7 @@ theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invar
   -- final iteration allows proving `post`
   (forall state, invariant 0 state → eventually prog post state) ∧
   -- while iterating, we eventually re-establish the invariant
-  (forall state k, k != 0 → invariant k state → eventually prog (invariant (k - 1)) state) →
+  (forall state k, k ≠ 0 → invariant k state → eventually prog (invariant (k - 1)) state) →
   -- then: we can prove the post
   eventually prog post initial
   := by
@@ -569,7 +635,7 @@ def p3: Program := [
 -- hit the final instruction and then rip is out of bounds.
 #eval (eval p3 {})
 
-def p3_spec (s: MachineState): Nat := 2^(2*s.regs.rbx.toNat + 1)
+def p3_spec (s: MachineState): Nat := 2^(2^s.regs.rbx.toNat)
 
 -- NOTE: This proof was broken by the flag semantics changes to support more instructions.
 -- It was already incomplete (had sorry statements). Full rewrite needed.
