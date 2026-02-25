@@ -1,5 +1,7 @@
 import Std
-import Lean.Meta.Sym
+import Lean
+import Lean.Meta.Sym.Grind
+open Lean Meta Sym Elab Tactic
 
 -- Registers Enumeration
 inductive Reg
@@ -66,6 +68,8 @@ deriving Repr
 
 instance : Coe Reg Operand where coe := Operand.reg
 instance : Coe UInt64 Operand where coe := Operand.imm
+attribute [coe] Operand.reg
+attribute [coe] Operand.imm
 
 abbrev Label := String
 
@@ -364,7 +368,7 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
     run_tac liftMetaTactic (λ g => SymM.run (sapply ``step_cps g))
     delta step1 eval1 fetch
     dsimp (config := { beta := true, zeta := false, iota := false, proj := false, eta := false })
-    -- delta MachineState.setReg
+    delta MachineState.setReg
     -- delta Registers.set
     -- dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
     sorry
