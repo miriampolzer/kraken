@@ -204,12 +204,12 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       set_reg s dst result ret))
 
   | .mulx hi lo src1 =>
-      eval_reg_or_mem s src1 (fun src1  =>
+      eval_reg_or_mem s src1 λ src1  =>
       eval_reg_or_mem s (.reg .rdx) (fun src2  =>
       let result := src1.toNat * src2.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
       set_reg s lo (UInt64.ofNat result) (fun s  =>
-      set_reg s hi (UInt64.ofNat (result >>> 64)) ret)))
+      set_reg s hi (UInt64.ofNat (result >>> 64)) ret))
 
   | .sub dst src =>
       eval_operand s src (fun src1  =>
@@ -280,10 +280,10 @@ def eval (p: Program) (s: MachineState): Option MachineState := do
   eval p s
 partial_fixpoint
 
-def step1 (p: Program) (s: MachineState) (post: _) :=
-  eval1 (m:={ throw _ := False }) p s post
-
 def Post := MachineState → Prop
+
+def step1 (p: Program) (s: MachineState) (post: Post) :=
+  eval1 (m:={ throw _ := False }) p s post
 
 inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
   | done (initial: MachineState):
@@ -369,8 +369,8 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
     delta step1 eval1 fetch
     dsimp (config := { beta := true, zeta := false, iota := false, proj := false, eta := false })
     delta MachineState.setReg
-    -- delta Registers.set
-    -- dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
+    delta Registers.set
+    dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
     sorry
 
 
