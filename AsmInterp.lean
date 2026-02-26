@@ -532,11 +532,24 @@ def p1: Program := [
   (.none, .mov (Reg.rax) (.imm64 1)),
 ]
 
--- Useful to debug the step_by tactic
+-- OLD: doing things with a heavy-handed `simp`
 example: step1 p1 {} (fun s => s.regs.rax = 1) := by
   simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,Operand.imm64,sign_extend_imm,set_reg_or_mem,next]
   simp [MachineState.setReg,Registers.set]
   native_decide
+
+-- Example 2: fine-grained tactics to step through the goal without un-necessary
+-- steps, and relying only on low-level tactics
+
+-- STEP TACTIC: reduce a match
+syntax "step_match" : tactic
+macro_rules
+  | `(tactic|step_match) =>
+  `(tactic|
+    -- JP: looks like reducing a match needs both beta and iota?
+    -- the match in the goal below does not reduce properly if I remove beta := true
+    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+  )
 
 def p11: Program := [
   (.none, .mov (.reg .rbx) (.imm64 2)),    -- rbx := 2
@@ -548,26 +561,61 @@ def sapply (lem : Name) (mvarId : MVarId) : SymM (List (MVarId)) := do
   let .goals gs ← rule.apply mvarId | failure
   return gs
 
+-- STEP TACTIC: one step of execution
+syntax "step_cps" : tactic
+macro_rules
+  | `(tactic|step_cps) =>
+  `(tactic|
+    run_tac liftMetaTactic (λ g => SymM.run (sapply `step_cps g))
+  )
+
+-- STEP TACTIC: reduce the lookup of the next instruction
+-- TODO: bail if the state's .rip is not a constant
+syntax "step_instr" : tactic
+macro_rules
+  | `(tactic|step_instr) =>
+  `(tactic|
+    delta step1 eval1 fetch;
+    dsimp only [List.findIdx?,List.findIdx,getElem?,List.get?Internal];
+    dsimp only [Instr.is_ctrl];
+    dsimp only [Bool.false_eq_true, ↓dreduceIte]; -- special simproc for if https://github.com/leanprover/lean4/blob/master/src/Lean/Meta/Tactic/Simp/BuiltinSimprocs/Core.lean#L25-L40
+    delta next
+  )
+
 example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
     eventually p11 (fun s => (s.getReg .rax).toNat = (s_old.getReg .rax).toNat + 2) {s_old with rip := 0}
   := by
-    apply step_cps
-    simp [p11]
-    delta step1 eval1 fetch bind pure
-    dsimp only [List.findIdx?,List.findIdx,getElem?,List.get?Internal]
-    dsimp only [Instr.is_ctrl]
-    dsimp only [Bool.false_eq_true, ↓dreduceIte] -- special simproc for if https://github.com/leanprover/lean4/blob/master/src/Lean/Meta/Tactic/Simp/BuiltinSimprocs/Core.lean#L25-L40
-    delta next
+    delta p11
+    -- First instruction
+    step_cps
+    step_instr
+
     delta strt1
-    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    step_match
     delta eval_operand Operand.imm64 sign_extend_imm
-    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
+    step_match
     delta set_reg_or_mem
-    dsimp (config := { beta := true, zeta := false, iota := true, proj := false, eta := false })
-    run_tac liftMetaTactic (λ g => SymM.run (sapply ``step_cps g))
-    delta step1 eval1 fetch
-    dsimp (config := { beta := true, zeta := false, iota := false, proj := false, eta := false })
+    step_match
     delta MachineState.setReg
+    dsimp (config := { beta := false, zeta := false, iota := true, proj := true, eta := false })
+
+    step_cps
+    step_instr
+    delta strt1
+    step_match
+    delta eval_reg_or_mem
+    step_match
+    dsimp (config := { beta := false, zeta := false, iota := true, proj := true, eta := false })
+    -- NOTE: we still have nice let-bindings in the goal!
+    delta MachineState.getReg Registers.get
+    step_match
+    -- JP: do we want rewrite rules here of the form:
+    --   (s.setReg r1 v).getReg r1 == v
+    --   (s.setReg r1 v).getReg r2 == s.getReg r2
+    -- I also feel like there are too many helpers for getReg/setReg -- perhaps
+    -- they need to be simplified.
+
+    -- delta MachineState.setReg
     -- delta Registers.set
     -- dsimp (config := { beta := true, zeta := false, iota := false, proj := true, eta := false })
     sorry
@@ -710,28 +758,44 @@ theorem p3_correct (initial: MachineState):
       -- Invariant preserved
       . intro state k h_k_nonzero inv
         rcases inv with ⟨ h_rip, h_rbx_is_k, h_inv ⟩
-        -- NOTE: The following tactics no longer work after sub_with_borrow/ImmWidth changes.
-        -- The goal structure changed significantly. Old tactics preserved for reference:
-        -- simp [p3]
-        -- apply step_cps
-        -- step_one
-        -- rw [h_rip]
-        -- simp
-        -- apply step_cps
-        -- step_one
-        -- have : (state.regs.rbx.toNat = 0) = False := by grind
-        -- simp only [this]
-        -- apply step_cps
-        -- step_one
-        -- apply step_cps
-        -- step_one
-        -- apply step_cps
-        -- step_one
-        -- apply eventually.done
-        -- constructor
-        -- . simp
-        -- . simp
-        --   constructor
-        --   . sorry
-        --   . sorry
-        sorry
+
+        simp [p3]
+        apply step_cps
+        step_one
+        rw [h_rip]
+        simp
+
+        apply step_cps
+        step_one
+        have h_rbx_nonzero : (state.regs.rbx.toNat = 0) = False := by grind
+        -- NOTE: The following tactics need updating for ImmWidth/sub_with_borrow changes.
+        -- The goal structure changed; these tactics may not make progress.
+        try simp [h_rbx_nonzero]
+        try simp only [show (Int64.toUInt64 0).toNat = 0 from rfl]
+        try simp only [Nat.sub_zero]
+        -- If the above didn't normalize the goal, fall through to sorry
+        all_goals try {
+          apply step_cps
+          step_one
+          apply step_cps
+          step_one
+          apply step_cps
+          step_one
+          apply eventually.done
+
+          -- Goals for invariant preservation
+          constructor
+          · simp -- back to correct address
+          · simp
+            constructor
+            · rw [ ← h_rbx_is_k ]
+              sorry
+            · have: 18446744073709551616 = 2^64 := by simp
+              simp [p3_spec] at h_bounds
+              rw [this]
+              rw [this] at h_bounds
+              rw [h_inv]
+              sorry
+        }
+        -- Fallback sorry for cases where tactic structure changed too much
+        all_goals sorry
