@@ -5,11 +5,7 @@ defaultTargets = ["kraken"]
 [[lean_lib]]
 name = "AsmInterp"
 
-[[lean_lib]]
-name = "Kraken"
-srcDir = "AsmInterp"
-root = "CodeGen"
-globs = ["CodeGen"]
+
 
 [[lean_exe]]
 name = "kraken"
