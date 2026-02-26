@@ -478,10 +478,10 @@ def eval (p: Program) (s: MachineState): Option MachineState := do
   eval p s
 partial_fixpoint
 
-def step1 (p: Program) (s: MachineState) (post: _) :=
-  eval1 (m:={ throw _ := False }) p s post
-
 def Post := MachineState → Prop
+
+def step1 (p: Program) (s: MachineState) (post: Post) :=
+  eval1 (m:={ throw _ := False }) p s post
 
 inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
   | done (initial: MachineState):
@@ -726,13 +726,13 @@ theorem p3_correct (initial: MachineState):
     simp
 
     -- Loop invariant introduction
-    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat == i ∧ s.regs.rdx.toNat == 2^(2*(initial.regs.rbx.toNat - i) + 1)) initial.regs.rbx.toNat
+    apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat = i ∧ i ≤ initial.regs.rbx.toNat ∧ s.regs.rdx.toNat = 2^(2^(initial.regs.rbx.toNat - i))) initial.regs.rbx.toNat
     constructor
     . simp; native_decide
     . constructor
       -- Invariant initially holds
       . intros state inv
-        rcases inv with ⟨ h_rip, h_rbx_zero, h_inv ⟩
+        rcases inv with ⟨ h_rip, h_rbx_zero, h_rbx_le, h_inv ⟩
         -- Step through a few program steps to "see" the jump and writing the
         -- sucess return value in rax
         simp [p3]
@@ -757,7 +757,7 @@ theorem p3_correct (initial: MachineState):
 
       -- Invariant preserved
       . intro state k h_k_nonzero inv
-        rcases inv with ⟨ h_rip, h_rbx_is_k, h_inv ⟩
+        rcases inv with ⟨ h_rip, h_rbx_is_k, h_rbx_le, h_inv ⟩
 
         simp [p3]
         apply step_cps
@@ -775,27 +775,35 @@ theorem p3_correct (initial: MachineState):
         try simp only [Nat.sub_zero]
         -- If the above didn't normalize the goal, fall through to sorry
         all_goals try {
-          apply step_cps
-          step_one
-          apply step_cps
-          step_one
-          apply step_cps
-          step_one
-          apply eventually.done
+        apply step_cps
+        step_one
+        apply step_cps
+        step_one
+        apply step_cps
+        step_one
+        apply eventually.done
 
-          -- Goals for invariant preservation
-          constructor
-          · simp -- back to correct address
-          · simp
+        -- Goals for invariant preservation
+        constructor
+        . simp -- back to correct address
+        . match h_state:state.regs.rbx, h_init:initial.regs.rbx with
+          | ⟨v_s⟩, ⟨v_i⟩ =>
+            have h_k_lt : k < 2^64 := h_rbx_is_k ▸ (by rw [h_state]; exact v_s.isLt)
+            have h_init_lt : v_i.toNat < 2^64 := v_i.isLt
+            simp [h_state, h_init, p3_spec, h_rbx_is_k, UInt64.ofInt, UInt64.ofNat, UInt64.toNat_ofNat] at *
             constructor
-            · rw [ ← h_rbx_is_k ]
-              sorry
-            · have: 18446744073709551616 = 2^64 := by simp
-              simp [p3_spec] at h_bounds
-              rw [this]
-              rw [this] at h_bounds
-              rw [h_inv]
-              sorry
+            . omega
+            . constructor
+              . omega
+              . rw [h_inv]
+                have h_vi_k : v_i.toNat - (k - 1) = (v_i.toNat - k) + 1 := by omega
+                rw [h_vi_k, Nat.mod_eq_of_lt]
+                . rw [← Nat.pow_two, ← Nat.pow_mul, ← Nat.pow_succ]
+                . apply Nat.lt_of_le_of_lt _ h_bounds
+                  rw [← Nat.pow_two, ← Nat.pow_mul, ← Nat.pow_succ]
+                  apply Nat.pow_le_pow_right (by decide)
+                  apply Nat.pow_le_pow_right (by decide)
+                  omega
         }
         -- Fallback sorry for cases where tactic structure changed too much
         all_goals sorry
