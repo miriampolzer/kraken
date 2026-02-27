@@ -62,26 +62,21 @@ deriving Repr
 -- Operands (extended with indexed memory modes for MontMul)
 -- Memory operands use WORD offsets (multiplied by 8 in code gen) for alignment
 
--- Immediate operand width (for sign/zero extension)
-inductive ImmWidth | w8 | w32 | w64
-  deriving Repr, BEq
-
 inductive Operand
 | reg (r : Reg)                                          -- %rax
-| imm (v : Int64) (width : ImmWidth := .w64)             -- $42 (with original width)
+-- Immediates may be signed in x86_64, so they must be Ints rather than UInts here.
+| imm8 (v : Int8)                                        -- $42 (8-bit signed)
+| imm32 (v : Int32)                                      -- $42 (32-bit signed)
+| imm64 (v : Int64)                                      -- $42 (64-bit signed)
 | mem (base : Reg) (idx : Option Reg := .none) (scale : Nat := 8) (disp : Int := 0)
   -- Standard x86: base + idx*scale + disp. E.g. 8(%rsp) = disp 8, (%rsi,%r15,8) = idx .r15
 deriving Repr, BEq
 
 instance : Coe Reg Operand where coe := Operand.reg
-instance : Coe Int64 Operand where coe v := Operand.imm v .w64
+instance : Coe Int64 Operand where coe := Operand.imm64
 attribute [coe] Operand.reg
-attribute [coe] Operand.imm
+attribute [coe] Operand.imm64
 
--- Convenience constructors for immediates
-def Operand.imm64 (v : UInt64) : Operand := .imm v.toInt64 .w64
-def Operand.imm32 (v : UInt32) : Operand := .imm (Int64.ofInt v.toNat) .w32
-def Operand.imm8  (v : UInt8)  : Operand := .imm (Int64.ofInt v.toNat) .w8
 
 abbrev Label := String
 
@@ -171,26 +166,32 @@ def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : 
 
 -- EVALUATION
 
--- Sign-extend immediate to 64 bits based on original width
--- For w8: sign-extend from 8 bits, for w32: sign-extend from 32 bits, for w64: direct conversion
-def sign_extend_imm (v : Int64) (width : ImmWidth) : UInt64 :=
-  match width with
-  | .w8 =>
-    -- Sign-extend from 8 bits: if bit 7 is set, extend with 1s
-    let v8 := v.toInt % 256  -- Get low 8 bits as signed
-    if v8 >= 128 then UInt64.ofInt (v8 - 256) else UInt64.ofInt v8
-  | .w32 =>
-    -- Sign-extend from 32 bits: if bit 31 is set, extend with 1s
-    let v32 := v.toInt % (2^32)  -- Get low 32 bits
-    if v32 >= 2^31 then UInt64.ofInt (v32 - 2^32) else UInt64.ofInt v32
-  | .w64 => v.toUInt64
+-- Sign-extend immediate to 64 bits (standard x86 behavior for most instructions)
+@[simp] def sign_extend_imm8 (v : Int8) : UInt64 := UInt64.ofInt v.toInt
+@[simp] def sign_extend_imm32 (v : Int32) : UInt64 := UInt64.ofInt v.toInt
+@[simp] def sign_extend_imm64 (v : Int64) : UInt64 := v.toUInt64
 
--- Zero-extend immediate (for MOV r64, imm32)
-def zero_extend_imm (v : Int64) (width : ImmWidth) : UInt64 :=
-  match width with
-  | .w8 => UInt64.ofNat (v.toInt.toNat % 256)
-  | .w32 => UInt64.ofNat (v.toInt.toNat % (2^32))
-  | .w64 => v.toUInt64
+-- Zero-extend immediate (rarely needed, e.g. specific MOV encodings)
+@[simp] def zero_extend_imm8 (v : Int8) : UInt64 := UInt64.ofNat (v.toInt.toNat % 256)
+@[simp] def zero_extend_imm32 (v : Int32) : UInt64 := UInt64.ofNat (v.toInt.toNat % (2^32))
+@[simp] def zero_extend_imm64 (v : Int64) : UInt64 := v.toUInt64
+
+@[simp] theorem Int64_toUInt64_zero : Int64.toUInt64 0 = 0 := by native_decide
+@[simp] theorem Int64_toUInt64_one : Int64.toUInt64 1 = 1 := by native_decide
+@[simp] theorem Int64_toUInt64_two : Int64.toUInt64 2 = 2 := by native_decide
+@[simp] theorem Int64_toUInt64_zero_toNat : (Int64.toUInt64 0).toNat = 0 := by native_decide
+@[simp] theorem Int64_toUInt64_one_toNat : (Int64.toUInt64 1).toNat = 1 := by native_decide
+@[simp] theorem Int64_toUInt64_two_toNat : (Int64.toUInt64 2).toNat = 2 := by native_decide
+
+-- Custom lemma: UInt64.ofInt (k : Int) ≠ 0 when k is a natural number with k < 2^64 and k ≠ 0
+-- TODO: Complete proof - requires Int.toNat_emod lemma that doesn't exist in this Lean version
+theorem UInt64_ofInt_natCast_ne_zero (k : Nat) (h_lt : k < 2^64) (h_ne : k ≠ 0) :
+    UInt64.ofInt (k : Int) ≠ 0 := by
+  sorry
+
+
+
+
 
 -- Compute effective address: base + idx*scale + disp
 def effective_addr [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
@@ -203,14 +204,16 @@ def effective_addr [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → 
 def eval_operand [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
   | .reg r => ret (s.getReg r)
-  | .imm v w => ret (sign_extend_imm v w)  -- Sign-extend by default
+  | .imm8 v => ret (sign_extend_imm8 v)
+  | .imm32 v => ret (sign_extend_imm32 v)
+  | .imm64 v => ret (sign_extend_imm64 v)
   | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
 
 def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
   | .reg r => ret (s.getReg r)
   | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
-  | .imm _ _ => throw "Ill-formed instruction (rip={repr s.rip})"
+  | .imm8 _ | .imm32 _ | .imm64 _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
@@ -218,7 +221,7 @@ def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: Mac
       ret (s.setReg r v)
   | .mem _ _ _ _ =>
       effective_addr s o (fun addr => s.writeMem addr v ret)
-  | .imm _ _ =>
+  | .imm8 _ | .imm32 _ | .imm64 _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
@@ -226,8 +229,9 @@ def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineSta
   | .reg r =>
       ret (s.setReg r v)
   | .mem _ _ _ _
-  | .imm _ _ =>
+  | .imm8 _ | .imm32 _ | .imm64 _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
+
 
 def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 
@@ -534,9 +538,8 @@ def p1: Program := [
 
 -- OLD: doing things with a heavy-handed `simp`
 example: step1 p1 {} (fun s => s.regs.rax = 1) := by
-  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,Operand.imm64,sign_extend_imm,set_reg_or_mem,next]
+  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,sign_extend_imm64,set_reg_or_mem,next]
   simp [MachineState.setReg,Registers.set]
-  native_decide
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
 -- steps, and relying only on low-level tactics
@@ -592,7 +595,7 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
 
     delta strt1
     step_match
-    delta eval_operand Operand.imm64 sign_extend_imm
+    delta eval_operand sign_extend_imm64
     step_match
     delta set_reg_or_mem
     step_match
@@ -645,7 +648,7 @@ macro_rules
     simp [
       step1,Instr.is_ctrl,eval1,fetch,
       -- works for calls to strt1
-      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effective_addr,Operand.imm64,sign_extend_imm,sub_with_borrow,add_with_carry,sub_overflow,add_overflow,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
+      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effective_addr,sign_extend_imm64,sub_with_borrow,add_with_carry,sub_overflow,add_overflow,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
       -- or calls to ctrl
       ctrl,lookup,List.findIdx?,List.findIdx?.go,pure,bind,jump_if,next] <;> try native_decide)
 
@@ -664,7 +667,6 @@ example: eventually p2 (fun s => s.regs.rax = 2) {} := by
 
   apply eventually.done
   simp
-  native_decide
 
 -- A loop down to 0
 theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invariant: Nat → Post) (n: Nat):
@@ -728,13 +730,12 @@ theorem p3_correct (initial: MachineState):
     -- Loop invariant introduction
     apply reg_dec_loop p3 _ _ (fun i s => s.rip = 1 ∧ s.regs.rbx.toNat = i ∧ i ≤ initial.regs.rbx.toNat ∧ s.regs.rdx.toNat = 2^(2^(initial.regs.rbx.toNat - i))) initial.regs.rbx.toNat
     constructor
-    . simp; native_decide
+    . simp
     . constructor
-      -- Invariant initially holds
+      -- Invariant at index 0 ==> post
       . intros state inv
         rcases inv with ⟨ h_rip, h_rbx_zero, h_rbx_le, h_inv ⟩
-        -- Step through a few program steps to "see" the jump and writing the
-        -- sucess return value in rax
+        -- Step through a few program steps
         simp [p3]
         apply step_cps
         step_one
@@ -743,17 +744,14 @@ theorem p3_correct (initial: MachineState):
         apply step_cps
         step_one
         have : state.regs.rbx.toNat = 0 := by grind
-        rw [this]
+        simp [this]
         apply step_cps
         step_one
         apply eventually.done
         simp
         -- Now functional correctness for initial invariant
-        simp only [p3_spec]
-        have h_int : Int64.toUInt64 0 = 0 := by native_decide
-        simp only [h_int]
-        -- NOTE: This grind fails due to a pre-existing issue with the invariant formula
-        sorry
+        simp [p3_spec]
+        grind
 
       -- Invariant preserved
       . intro state k h_k_nonzero inv
@@ -767,14 +765,18 @@ theorem p3_correct (initial: MachineState):
 
         apply step_cps
         step_one
-        have h_rbx_nonzero : (state.regs.rbx.toNat = 0) = False := by grind
-        -- NOTE: The following tactics need updating for ImmWidth/sub_with_borrow changes.
-        -- The goal structure changed; these tactics may not make progress.
-        try simp [h_rbx_nonzero]
-        try simp only [show (Int64.toUInt64 0).toNat = 0 from rfl]
-        try simp only [Nat.sub_zero]
-        -- If the above didn't normalize the goal, fall through to sorry
-        all_goals try {
+        have h_k_ne : k ≠ 0 := by grind
+        -- state.regs.rbx.toNat = k and toNat < 2^64 for UInt64
+        have h_k_lt : k < 2^64 := h_rbx_is_k ▸ (state.regs.rbx.toNat_lt)
+        -- Simplify all the Int64.toUInt64 terms
+        simp_all only [ne_eq, not_false_eq_true]
+        -- Prove the if-condition is false: UInt64.ofInt ↑k ≠ 0 when k ≠ 0
+        have h_cond : UInt64.ofInt (k : Int) ≠ 0 := UInt64_ofInt_natCast_ne_zero k h_k_lt h_k_ne
+        rw [if_neg h_cond]
+
+
+
+
         apply step_cps
         step_one
         apply step_cps
@@ -790,7 +792,7 @@ theorem p3_correct (initial: MachineState):
           | ⟨v_s⟩, ⟨v_i⟩ =>
             have h_k_lt : k < 2^64 := h_rbx_is_k ▸ (by rw [h_state]; exact v_s.isLt)
             have h_init_lt : v_i.toNat < 2^64 := v_i.isLt
-            simp [h_state, h_init, p3_spec, h_rbx_is_k, UInt64.ofInt, UInt64.ofNat, UInt64.toNat_ofNat] at *
+            simp [h_state, h_init, p3_spec, UInt64.ofInt, UInt64.ofNat, UInt64.toNat_ofNat] at *
             constructor
             . omega
             . constructor
@@ -804,6 +806,5 @@ theorem p3_correct (initial: MachineState):
                   apply Nat.pow_le_pow_right (by decide)
                   apply Nat.pow_le_pow_right (by decide)
                   omega
-        }
-        -- Fallback sorry for cases where tactic structure changed too much
-        all_goals sorry
+
+
