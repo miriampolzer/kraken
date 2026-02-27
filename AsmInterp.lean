@@ -65,11 +65,15 @@ deriving Repr
 inductive Operand
 | reg (r : Reg)                                          -- %rax
 -- Immediates may be signed in x86_64, so they must be Ints rather than UInts here.
+-- The widths of immediates are syntactically indistinguishable in AT&T syntax,
+-- and the difference is only apparent from the context (e.g. the instruction)
 | imm8 (v : Int8)                                        -- $42 (8-bit signed)
 | imm32 (v : Int32)                                      -- $42 (32-bit signed)
 | imm64 (v : Int64)                                      -- $42 (64-bit signed)
-| mem (base : Reg) (idx : Option Reg := .none) (scale : Nat := 8) (disp : Int := 0)
+| mem (base : Reg) (idx : Option Reg := .none) (scale : Nat := 1) (disp : Int := 0)
   -- Standard x86: base + idx*scale + disp. E.g. 8(%rsp) = disp 8, (%rsi,%r15,8) = idx .r15
+  -- Per Intel SDM Vol. 2A Section 2.1.5 (SIB byte), valid scale values are 1, 2, 4, 8.
+  -- The default scale is 1 (SIB SS bits = 00). Scale must be explicit in AT&T syntax when != 1.
 deriving Repr, BEq
 
 instance : Coe Reg Operand where coe := Operand.reg
