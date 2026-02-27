@@ -64,12 +64,9 @@ deriving Repr
 
 inductive Operand
 | reg (r : Reg)                                          -- %rax
--- Immediates may be signed in x86_64, so they must be Ints rather than UInts here.
--- The widths of immediates are syntactically indistinguishable in AT&T syntax,
--- and the difference is only apparent from the context (e.g. the instruction)
-| imm8 (v : Int8)                                        -- $42 (8-bit signed)
-| imm32 (v : Int32)                                      -- $42 (32-bit signed)
-| imm64 (v : Int64)                                      -- $42 (64-bit signed)
+-- Immediates: we use a single Int64 type since the parser already handles
+-- sign-extension from AT&T syntax. The semantic value is always 64-bit signed.
+| imm (v : Int64)                                        -- $42 (signed immediate)
 | mem (base : Reg) (idx : Option Reg := .none) (scale : Nat := 1) (disp : Int := 0)
   -- Standard x86: base + idx*scale + disp. E.g. 8(%rsp) = disp 8, (%rsi,%r15,8) = idx .r15
   -- Per Intel SDM Vol. 2A Section 2.1.5 (SIB byte), valid scale values are 1, 2, 4, 8.
@@ -77,9 +74,9 @@ inductive Operand
 deriving Repr, BEq
 
 instance : Coe Reg Operand where coe := Operand.reg
-instance : Coe Int64 Operand where coe := Operand.imm64
+instance : Coe Int64 Operand where coe := Operand.imm
 attribute [coe] Operand.reg
-attribute [coe] Operand.imm64
+attribute [coe] Operand.imm
 
 
 abbrev Label := String
@@ -100,7 +97,14 @@ inductive Instr
   | dec  (dst : Operand)                       -- decq: dst--, sets ZF (not CF!)
 
   -- Move/Load
-  | mov  (dst src : Operand)                   -- movq
+  | mov  (dst src : Operand)                   -- movq: 64-bit move
+  | movb (dst src : Operand)                   -- movb: 8-bit move (preserves upper 56 bits)
+  | movw (dst src : Operand)                   -- movw: 16-bit move (preserves upper 48 bits)
+  | movl (dst src : Operand)                   -- movl: 32-bit move (ZERO-extends to 64-bit!)
+  -- Sign-extending moves (source width → 64-bit)
+  | movsxbq (dst src : Operand)                -- movsbq: sign-extend 8-bit to 64-bit
+  | movsxwq (dst src : Operand)                -- movswq: sign-extend 16-bit to 64-bit
+  | movsxlq (dst src : Operand)                -- movslq: sign-extend 32-bit to 64-bit
   | lea  (dst : Reg) (src : Operand)           -- leaq: dst = effective address
 
   -- Bitwise
@@ -168,17 +172,31 @@ def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : 
   else
     ret { s with heap := s.heap.insert addr val }
 
--- EVALUATION
+-- Sign-extension helpers: extend smaller signed values to 64-bit
+-- These check the sign bit and extend accordingly
+@[simp] def sign_extend_8_to_64 (v : UInt64) : UInt64 :=
+  if v &&& 0x80 != 0 then v ||| 0xFFFFFFFFFFFFFF00 else v &&& 0xFF
 
--- Sign-extend immediate to 64 bits (standard x86 behavior for most instructions)
-@[simp] def sign_extend_imm8 (v : Int8) : UInt64 := UInt64.ofInt v.toInt
-@[simp] def sign_extend_imm32 (v : Int32) : UInt64 := UInt64.ofInt v.toInt
-@[simp] def sign_extend_imm64 (v : Int64) : UInt64 := v.toUInt64
+@[simp] def sign_extend_16_to_64 (v : UInt64) : UInt64 :=
+  if v &&& 0x8000 != 0 then v ||| 0xFFFFFFFFFFFF0000 else v &&& 0xFFFF
 
--- Zero-extend immediate (rarely needed, e.g. specific MOV encodings)
-@[simp] def zero_extend_imm8 (v : Int8) : UInt64 := UInt64.ofNat (v.toInt.toNat % 256)
-@[simp] def zero_extend_imm32 (v : Int32) : UInt64 := UInt64.ofNat (v.toInt.toNat % (2^32))
-@[simp] def zero_extend_imm64 (v : Int64) : UInt64 := v.toUInt64
+@[simp] def sign_extend_32_to_64 (v : UInt64) : UInt64 :=
+  if v &&& 0x80000000 != 0 then v ||| 0xFFFFFFFF00000000 else v &&& 0xFFFFFFFF
+
+-- Zero-extension helpers: mask to width (upper bits become 0)
+@[simp] def zero_extend_8_to_64 (v : UInt64) : UInt64 := v &&& 0xFF
+@[simp] def zero_extend_16_to_64 (v : UInt64) : UInt64 := v &&& 0xFFFF
+@[simp] def zero_extend_32_to_64 (v : UInt64) : UInt64 := v &&& 0xFFFFFFFF
+
+-- Partial register write helpers: merge new value into existing register
+-- These preserve upper bits of dst and write lower bits from src
+@[simp] def write_low_8 (dst src : UInt64) : UInt64 := (dst &&& 0xFFFFFFFFFFFFFF00) ||| zero_extend_8_to_64 src
+@[simp] def write_low_16 (dst src : UInt64) : UInt64 := (dst &&& 0xFFFFFFFFFFFF0000) ||| zero_extend_16_to_64 src
+-- movl zero-extends, so it's just zero_extend_32_to_64 (no preservation)
+
+-- Convert Int64 immediate to UInt64 for execution
+-- This is a direct conversion since the parser already handled sign-extension
+@[simp] def eval_imm (v : Int64) : UInt64 := v.toUInt64
 
 @[simp] theorem Int64_toUInt64_zero : Int64.toUInt64 0 = 0 := by native_decide
 @[simp] theorem Int64_toUInt64_one : Int64.toUInt64 1 = 1 := by native_decide
@@ -220,16 +238,14 @@ def effective_addr [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → 
 def eval_operand [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
   | .reg r => ret (s.getReg r)
-  | .imm8 v => ret (sign_extend_imm8 v)
-  | .imm32 v => ret (sign_extend_imm32 v)
-  | .imm64 v => ret (sign_extend_imm64 v)
+  | .imm v => ret (eval_imm v)
   | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
 
 def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
   | .reg r => ret (s.getReg r)
   | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
-  | .imm8 _ | .imm32 _ | .imm64 _ => throw "Ill-formed instruction (rip={repr s.rip})"
+  | .imm _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
@@ -237,7 +253,7 @@ def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: Mac
       ret (s.setReg r v)
   | .mem _ _ _ _ =>
       effective_addr s o (fun addr => s.writeMem addr v ret)
-  | .imm8 _ | .imm32 _ | .imm64 _ =>
+  | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
@@ -245,7 +261,7 @@ def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineSta
   | .reg r =>
       ret (s.setReg r v)
   | .mem _ _ _ _
-  | .imm8 _ | .imm32 _ | .imm64 _ =>
+  | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
 
@@ -291,6 +307,38 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
   | .mov dst src =>
       eval_operand s src (fun val =>
       set_reg_or_mem s dst val ret)
+
+  | .movb dst src =>
+      -- 8-bit move: preserves upper 56 bits of destination register
+      eval_operand s src (fun val =>
+      eval_reg_or_mem s dst (fun dst_v =>
+      set_reg_or_mem s dst (write_low_8 dst_v val) ret))
+
+  | .movw dst src =>
+      -- 16-bit move: preserves upper 48 bits of destination register
+      eval_operand s src (fun val =>
+      eval_reg_or_mem s dst (fun dst_v =>
+      set_reg_or_mem s dst (write_low_16 dst_v val) ret))
+
+  | .movl dst src =>
+      -- 32-bit move: ZERO-extends to 64-bit (x86-64 convention)
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst (zero_extend_32_to_64 val) ret)
+
+  | .movsxbq dst src =>
+      -- Sign-extend 8-bit to 64-bit
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst (sign_extend_8_to_64 val) ret)
+
+  | .movsxwq dst src =>
+      -- Sign-extend 16-bit to 64-bit
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst (sign_extend_16_to_64 val) ret)
+
+  | .movsxlq dst src =>
+      -- Sign-extend 32-bit to 64-bit
+      eval_operand s src (fun val =>
+      set_reg_or_mem s dst (sign_extend_32_to_64 val) ret)
 
   | .add dst src =>
       eval_operand s src (fun src_v =>
@@ -549,12 +597,12 @@ theorem eventually_weaken (program: Program) (p q: Post)
 
 -- Example 1: single step of execution
 def p1: Program := [
-  (.none, .mov (Reg.rax) (.imm64 1)),
+  (.none, .mov (Reg.rax) (.imm 1)),
 ]
 
 -- OLD: doing things with a heavy-handed `simp`
 example: step1 p1 {} (fun s => s.regs.rax = 1) := by
-  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,sign_extend_imm64,set_reg_or_mem,next]
+  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next]
   simp [MachineState.setReg,Registers.set]
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
@@ -571,7 +619,7 @@ macro_rules
   )
 
 def p11: Program := [
-  (.none, .mov (.reg .rbx) (.imm64 2)),    -- rbx := 2
+  (.none, .mov (.reg .rbx) (.imm 2)),    -- rbx := 2
   (.none, .adcx (.reg .rax) (.reg .rbx)) -- rax := rax + rbx
 ]
 
@@ -611,7 +659,7 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
 
     delta strt1
     step_match
-    delta eval_operand sign_extend_imm64
+    delta eval_operand eval_imm
     step_match
     delta set_reg_or_mem
     step_match
@@ -641,9 +689,9 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
 
 
 def p2: Program := [
-  (.some "start", .mov (.reg .rax) (.imm64 1)),
+  (.some "start", .mov (.reg .rax) (.imm 1)),
   (.none,         .jz "start"),
-  (.none,         .mov (.reg .rax) (.imm64 2)),
+  (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
 -- NOTES: why is the right way of doing this? Ideally, we would not ask to
@@ -664,7 +712,7 @@ macro_rules
     simp [
       step1,Instr.is_ctrl,eval1,fetch,
       -- works for calls to strt1
-      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effective_addr,sign_extend_imm64,sub_with_borrow,add_with_carry,sub_overflow,add_overflow,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
+      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effective_addr,eval_imm,sub_with_borrow,add_with_carry,sub_overflow,add_overflow,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
       -- or calls to ctrl
       ctrl,lookup,List.findIdx?,List.findIdx?.go,pure,bind,jump_if,next] <;> try native_decide)
 
@@ -710,14 +758,14 @@ theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invar
 
 -- Example 3: a loop
 def p3: Program := [
-  -- (.none,         .mov (.reg .rbx) (.imm64 4)),                -- rbx: loop counter = 4
-  (.none,         .mov (.reg .rdx) (.imm64 2)),                -- rdx: current result = 2
-  (.some "start", .sub (.reg .rbx) (.imm64 0)),                -- TEST: zf = (rbx == 0)
+  -- (.none,         .mov (.reg .rbx) (.imm 4)),                -- rbx: loop counter = 4
+  (.none,         .mov (.reg .rdx) (.imm 2)),                -- rdx: current result = 2
+  (.some "start", .sub (.reg .rbx) (.imm 0)),                -- TEST: zf = (rbx == 0)
   (.none        , .jz "end"),                                  -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
   (.none        , .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)),  -- BODY: rdx := rdx * rdx
-  (.none,         .sub (.reg .rbx) (.imm64 1)),                -- rbx -= 1
+  (.none,         .sub (.reg .rbx) (.imm 1)),                -- rbx -= 1
   (.none,         .jmp "start"),                               -- go back to test & loop body
-  (.some "end",   .mov (.reg .rax) (.imm64 0)),                -- meaningless -- just want the label to be well-defined
+  (.some "end",   .mov (.reg .rax) (.imm 0)),                -- meaningless -- just want the label to be well-defined
   -- result is 2^16, in rdx
 ]
 
