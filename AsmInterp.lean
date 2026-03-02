@@ -289,12 +289,13 @@ def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineSta
 
 def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 
--- Signed overflow detection for addition: compare unbounded Int sum to truncated Int64 result
+-- Signed overflow detection for addition with carry: compare unbounded Int sum to truncated Int64 result
 -- Overflow occurs iff the unbounded sum differs from the signed interpretation of the truncated result
--- This definition avoids case splits and is more LIA-solver friendly
-def add_overflow (a b : UInt64) : Bool :=
-  let unbounded := a.toInt64.toInt + b.toInt64.toInt
-  let truncated := (a + b).toInt64.toInt
+-- Per Intel SDM, OF reflects the full operation including carry-in
+def add_overflow_with_carry (a b : UInt64) (carry_in : Nat) : Bool :=
+  let unbounded := a.toInt64.toInt + b.toInt64.toInt + carry_in
+  let result := UInt64.ofNat (a.toNat + b.toNat + carry_in)
+  let truncated := result.toInt64.toInt
   unbounded != truncated
 
 -- Addition with carry: dst + src + carry_in
@@ -304,13 +305,15 @@ def add_with_carry (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool 
   let result64 := UInt64.ofNat unbounded
   let zf := result64 == 0
   let cf := unbounded >= 2^64  -- Carry if result doesn't fit in 64 bits
-  let of := add_overflow dst src
+  let of := add_overflow_with_carry dst src carry_in
   (result64, zf, cf, of)
 
--- Signed overflow detection for subtraction: compare unbounded Int diff to truncated Int64 result
-def sub_overflow (a b : UInt64) : Bool :=
-  let unbounded := a.toInt64.toInt - b.toInt64.toInt
-  let truncated := (a - b).toInt64.toInt
+-- Signed overflow detection for subtraction with borrow: compare unbounded Int diff to truncated Int64 result
+-- Per Intel SDM, OF reflects the full operation including borrow-in
+def sub_overflow_with_borrow (a b : UInt64) (borrow_in : Nat) : Bool :=
+  let unbounded := a.toInt64.toInt - b.toInt64.toInt - borrow_in
+  let result := UInt64.ofInt (a.toNat - b.toNat - borrow_in)
+  let truncated := result.toInt64.toInt
   unbounded != truncated
 
 -- Subtraction with borrow: dst - src - carry_in
@@ -320,8 +323,12 @@ def sub_with_borrow (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool
   let result64 := UInt64.ofInt unbounded
   let zf := result64 == 0
   let cf := src.toNat + carry_in > dst.toNat  -- Borrow if src+carry > dst (unsigned)
-  let of := sub_overflow dst src
+  let of := sub_overflow_with_borrow dst src carry_in
   (result64, zf, cf, of)
+
+-- Backward-compatible aliases (used in step_one tactic simp set and CMP instruction)
+def add_overflow (a b : UInt64) : Bool := add_overflow_with_carry a b 0
+def sub_overflow (a b : UInt64) : Bool := sub_overflow_with_borrow a b 0
 
 -- This function intentionally does not increase the pc, callers will increase
 -- it (always by 1).
@@ -390,11 +397,12 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       ret { s with flags := { zf, of, cf }})))
 
   | .sbb dst src =>
+      -- Per Intel SDM: OF, SF, ZF, AF, PF, and CF flags are set according to the result
       eval_operand s src (fun src_v =>
       eval_reg_or_mem s dst (fun dst_v =>
-      let (result64, zf, cf, _of) := sub_with_borrow dst_v src_v s.flags.cf.toNat
+      let (result64, zf, cf, of) := sub_with_borrow dst_v src_v s.flags.cf.toNat
       set_reg_or_mem s dst result64 (fun s =>
-      ret { s with flags := { s.flags with zf, cf }})))
+      ret { s with flags := { zf, of, cf }})))
 
   | .mul src =>
       -- mulq: rdx:rax = rax * src
@@ -419,28 +427,36 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       set_reg s hi (UInt64.ofNat (result >>> 64)) ret))
 
   | .imul dst src =>
+      -- Per Intel SDM: IMUL performs SIGNED multiplication
+      -- Two-operand form: DEST := truncate(DEST × SRC) (signed)
+      -- OF/CF set when signed result doesn't fit in destination size
       eval_reg_or_mem s src (fun src_v =>
       eval_reg_or_mem s dst (fun dst_v =>
-      let result := dst_v.toNat * src_v.toNat
-      let result64 := UInt64.ofNat result
-      -- OF/CF set if result doesn't fit in 64 bits
-      let overflow := result >>> 64 != 0
+      let result := dst_v.toInt64.toInt * src_v.toInt64.toInt
+      let result64 := UInt64.ofInt result
+      -- OF/CF set if sign-extended truncated result differs from full result
+      let signExtended := result64.toInt64.toInt
+      let overflow := result != signExtended
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { s.flags with cf := overflow, of := overflow }})))
 
   | .neg dst =>
+      -- Per Intel SDM: CF set unless operand is 0; OF set according to result
+      -- OF is set when negating the most negative value (INT64_MIN)
       eval_reg_or_mem s dst (fun dst_v =>
       let result := 0 - dst_v
       let zf := result == 0
       let cf := dst_v != 0  -- CF is set unless operand is 0
+      let of := dst_v == 0x8000000000000000  -- OF set when negating INT64_MIN
       set_reg_or_mem s dst result (fun s =>
-      ret { s with flags := { s.flags with zf, cf }}))
+      ret { s with flags := { s.flags with zf, cf, of }}))
 
   | .dec dst =>
       eval_reg_or_mem s dst (fun dst_v =>
       let result := dst_v - 1
       let zf := result == 0
-      let of := sub_overflow dst_v 1
+      -- Signed overflow occurs when decrementing INT64_MIN (produces positive result)
+      let of := dst_v == 0x8000000000000000
       -- dec does NOT affect CF
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with zf, of }}))
