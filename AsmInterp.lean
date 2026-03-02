@@ -78,8 +78,17 @@ instance : Coe Int64 Operand where coe := Operand.imm
 attribute [coe] Operand.reg
 attribute [coe] Operand.imm
 
-
 abbrev Label := String
+
+-- Condition codes for conditional jumps
+inductive CondCode
+| z    -- Zero (ZF=1)
+| nz   -- Not Zero (ZF=0)
+| b    -- Below/Carry (CF=1)
+| ae   -- Above or Equal (CF=0)
+| a    -- Above (CF=0 ∧ ZF=0)
+| be   -- Below or Equal (CF=1 ∨ ZF=1)
+deriving Repr, BEq, DecidableEq
 
 -- Instructions (extended for MontMul)
 inductive Instr
@@ -96,15 +105,9 @@ inductive Instr
   | neg  (dst : Operand)                       -- negq: dst = -dst, sets CF, ZF, OF
   | dec  (dst : Operand)                       -- decq: dst--, sets ZF (not CF!)
 
-  -- Move/Load
-  | mov  (dst src : Operand)                   -- movq: 64-bit move
-  | movb (dst src : Operand)                   -- movb: 8-bit move (preserves upper 56 bits)
-  | movw (dst src : Operand)                   -- movw: 16-bit move (preserves upper 48 bits)
-  | movl (dst src : Operand)                   -- movl: 32-bit move (ZERO-extends to 64-bit!)
-  -- Sign-extending moves (source width → 64-bit)
-  | movsxbq (dst src : Operand)                -- movsbq: sign-extend 8-bit to 64-bit
-  | movsxwq (dst src : Operand)                -- movswq: sign-extend 16-bit to 64-bit
-  | movsxlq (dst src : Operand)                -- movslq: sign-extend 32-bit to 64-bit
+  -- Move/Load (simplified: only 64-bit and 32-bit zero-extending needed for benchmarks)
+  | mov  (dst src : Operand)                   -- movq/movabs: 64-bit move (imm if smaller, is sign-extended from 32-bit)
+  | movl (dst src : Operand)                   -- movl: 32-bit move, ZERO-extends to 64-bit
   | lea  (dst : Reg) (src : Operand)           -- leaq: dst = effective address
 
   -- Bitwise
@@ -116,18 +119,25 @@ inductive Instr
   | cmp  (a b : Operand)                       -- cmpq: compute a - b, set flags
 
   -- Control flow (explicit jumps - core design of Kraken)
-  | jmp (target : Label)                       -- Unconditional jump
-  | jz  (target : Label)                       -- Jump if ZF=1
-  | jnz (target : Label)                       -- Jump if ZF=0
-  | jb  (target : Label)                       -- Jump if CF=1 (unsigned below)
-  | jae (target : Label)                       -- Jump if CF=0 (unsigned above or equal)
-  | jne (target : Label)                       -- Alias for jnz (after cmp)
-  | ja  (target : Label)                       -- Jump if CF=0 and ZF=0 (unsigned above)
+  -- Unconditional jump
+  | jmp (target : Label)
+  -- Conditional jump: jcc (condition code, target)
+  -- Mapping from AT&T syntax to CondCode:
+  --   AT&T    CondCode   Condition          Flags tested
+  --   ----    --------   ---------          ------------
+  --   jz      .z         Zero               ZF=1
+  --   jnz     .nz        Not Zero           ZF=0
+  --   je      .z         Equal (alias)      ZF=1
+  --   jne     .nz        Not Equal (alias)  ZF=0
+  --   jb      .b         Below (unsigned)   CF=1
+  --   jae     .ae        Above/Equal        CF=0
+  --   ja      .a         Above (unsigned)   CF=0 ∧ ZF=0
+  --   jbe     .be        Below/Equal        CF=1 ∨ ZF=1
+  | jcc (cc : CondCode) (target : Label)
   deriving Repr
 
 def Instr.is_ctrl
-  | Instr.jmp _ | Instr.jnz _ | Instr.jz _
-  | Instr.jb _ | Instr.jae _ | Instr.jne _ | Instr.ja _ => true
+  | Instr.jmp _ | Instr.jcc _ _ => true
   | _ => false
 
 -- HELPERS
@@ -172,21 +182,34 @@ def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : 
   else
     ret { s with heap := s.heap.insert addr val }
 
--- Sign-extension helpers: extend smaller signed values to 64-bit
--- These check the sign bit and extend accordingly
+-- Sign-extension helpers: use standard integer type conversions
+-- Strategy: truncate to input size → signed Int conversion → convert to UInt64
+-- This avoids branching on sign bit and is more proof-friendly.
+
+-- 8-bit sign extension: UInt64 → UInt8 → Int8 → Int → UInt64
 @[simp] def sign_extend_8_to_64 (v : UInt64) : UInt64 :=
-  if v &&& 0x80 != 0 then v ||| 0xFFFFFFFFFFFFFF00 else v &&& 0xFF
+  let truncated : UInt8 := v.toUInt8
+  let signed : Int := truncated.toInt8.toInt
+  UInt64.ofInt signed
 
+-- 16-bit sign extension: UInt64 → UInt16 → Int16 → Int → UInt64
 @[simp] def sign_extend_16_to_64 (v : UInt64) : UInt64 :=
-  if v &&& 0x8000 != 0 then v ||| 0xFFFFFFFFFFFF0000 else v &&& 0xFFFF
+  let truncated : UInt16 := v.toUInt16
+  let signed : Int := truncated.toInt16.toInt
+  UInt64.ofInt signed
 
+-- 32-bit sign extension: UInt64 → UInt32 → Int32 → Int → UInt64
 @[simp] def sign_extend_32_to_64 (v : UInt64) : UInt64 :=
-  if v &&& 0x80000000 != 0 then v ||| 0xFFFFFFFF00000000 else v &&& 0xFFFFFFFF
+  let truncated : UInt32 := v.toUInt32
+  let signed : Int := truncated.toInt32.toInt
+  UInt64.ofInt signed
 
--- Zero-extension helpers: mask to width (upper bits become 0)
-@[simp] def zero_extend_8_to_64 (v : UInt64) : UInt64 := v &&& 0xFF
-@[simp] def zero_extend_16_to_64 (v : UInt64) : UInt64 := v &&& 0xFFFF
-@[simp] def zero_extend_32_to_64 (v : UInt64) : UInt64 := v &&& 0xFFFFFFFF
+-- Zero-extension helpers: truncate to input size, then widen (unsigned)
+-- Upper bits are implicitly zero when converting smaller unsigned to larger
+
+@[simp] def zero_extend_8_to_64 (v : UInt64) : UInt64 := v.toUInt8.toUInt64
+@[simp] def zero_extend_16_to_64 (v : UInt64) : UInt64 := v.toUInt16.toUInt64
+@[simp] def zero_extend_32_to_64 (v : UInt64) : UInt64 := v.toUInt32.toUInt64
 
 -- Partial register write helpers: merge new value into existing register
 -- These preserve upper bits of dst and write lower bits from src
@@ -194,8 +217,7 @@ def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : 
 @[simp] def write_low_16 (dst src : UInt64) : UInt64 := (dst &&& 0xFFFFFFFFFFFF0000) ||| zero_extend_16_to_64 src
 -- movl zero-extends, so it's just zero_extend_32_to_64 (no preservation)
 
--- Convert Int64 immediate to UInt64 for execution
--- This is a direct conversion since the parser already handled sign-extension
+-- Convert Int64 immediate to UInt64
 @[simp] def eval_imm (v : Int64) : UInt64 := v.toUInt64
 
 @[simp] theorem Int64_toUInt64_zero : Int64.toUInt64 0 = 0 := by native_decide
@@ -267,35 +289,38 @@ def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineSta
 
 def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 
--- Signed overflow detection for addition: true if result overflows Int64 range
+-- Signed overflow detection for addition: compare unbounded Int sum to truncated Int64 result
+-- Overflow occurs iff the unbounded sum differs from the signed interpretation of the truncated result
+-- This definition avoids case splits and is more LIA-solver friendly
 def add_overflow (a b : UInt64) : Bool :=
-  let sum := a.toInt64.toInt + b.toInt64.toInt
-  sum >= 2^63 || sum < -2^63
+  let unbounded := a.toInt64.toInt + b.toInt64.toInt
+  let truncated := (a + b).toInt64.toInt
+  unbounded != truncated
 
 -- Addition with carry: dst + src + carry_in
 -- Returns (result, zf, cf, of)
 def add_with_carry (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
-  let result := dst.toNat + src.toNat + carry_in
-  let carry := result >>> 64
-  let result64 := UInt64.ofNat result
+  let unbounded := dst.toNat + src.toNat + carry_in
+  let result64 := UInt64.ofNat unbounded
   let zf := result64 == 0
-  let cf := carry != 0
+  let cf := unbounded >= 2^64  -- Carry if result doesn't fit in 64 bits
   let of := add_overflow dst src
   (result64, zf, cf, of)
 
--- Signed overflow detection for subtraction: true if result overflows Int64 range
+-- Signed overflow detection for subtraction: compare unbounded Int diff to truncated Int64 result
 def sub_overflow (a b : UInt64) : Bool :=
-  let diff := a.toInt64.toInt - b.toInt64.toInt
-  diff >= 2^63 || diff < -2^63
+  let unbounded := a.toInt64.toInt - b.toInt64.toInt
+  let truncated := (a - b).toInt64.toInt
+  unbounded != truncated
 
 -- Subtraction with borrow: dst - src - carry_in
 -- Returns (result, zf, cf, of)
 def sub_with_borrow (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
-  let res := (Int.ofNat dst.toNat) - (Int.ofNat src.toNat) - carry_in
-  let cf := res < 0
-  let of := sub_overflow dst src
-  let result64 := UInt64.ofInt res
+  let unbounded := dst.toNat - src.toNat - carry_in
+  let result64 := UInt64.ofInt unbounded
   let zf := result64 == 0
+  let cf := src.toNat + carry_in > dst.toNat  -- Borrow if src+carry > dst (unsigned)
+  let of := sub_overflow dst src
   (result64, zf, cf, of)
 
 -- This function intentionally does not increase the pc, callers will increase
@@ -305,40 +330,15 @@ def sub_with_borrow (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool
 def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): α :=
   match i with
   | .mov dst src =>
+      -- 64-bit move (movq/movabs): direct copy of evaluated value
+      -- For immediates, Int64.toUInt64 already gives the correct 64-bit value
       eval_operand s src (fun val =>
       set_reg_or_mem s dst val ret)
 
-  | .movb dst src =>
-      -- 8-bit move: preserves upper 56 bits of destination register
-      eval_operand s src (fun val =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      set_reg_or_mem s dst (write_low_8 dst_v val) ret))
-
-  | .movw dst src =>
-      -- 16-bit move: preserves upper 48 bits of destination register
-      eval_operand s src (fun val =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      set_reg_or_mem s dst (write_low_16 dst_v val) ret))
-
   | .movl dst src =>
-      -- 32-bit move: ZERO-extends to 64-bit (x86-64 convention)
+      -- 32-bit move: ZERO-extends to 64-bit (clears upper 32 bits)
       eval_operand s src (fun val =>
       set_reg_or_mem s dst (zero_extend_32_to_64 val) ret)
-
-  | .movsxbq dst src =>
-      -- Sign-extend 8-bit to 64-bit
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (sign_extend_8_to_64 val) ret)
-
-  | .movsxwq dst src =>
-      -- Sign-extend 16-bit to 64-bit
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (sign_extend_16_to_64 val) ret)
-
-  | .movsxlq dst src =>
-      -- Sign-extend 32-bit to 64-bit
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (sign_extend_32_to_64 val) ret)
 
   | .add dst src =>
       eval_operand s src (fun src_v =>
@@ -497,28 +497,16 @@ def ctrl [Throw α] (s: MachineState) (lookup: Label → (Nat → α) → α) (i
   | .jmp l =>
       lookup l (fun rip =>
       jump_if s True rip ret)
-  | .jnz l =>
+  | .jcc cc l =>
       lookup l (fun rip =>
-      jump_if s (!s.flags.zf) rip ret)
-  | .jz l =>
-      lookup l (fun rip =>
-      jump_if s s.flags.zf rip ret)
-  | .jb l =>
-      -- Jump if below (unsigned): CF=1
-      lookup l (fun rip =>
-      jump_if s s.flags.cf rip ret)
-  | .jae l =>
-      -- Jump if above or equal (unsigned): CF=0
-      lookup l (fun rip =>
-      jump_if s (!s.flags.cf) rip ret)
-  | .jne l =>
-      -- Alias for jnz: ZF=0
-      lookup l (fun rip =>
-      jump_if s (!s.flags.zf) rip ret)
-  | .ja l =>
-      -- Jump if above (unsigned): CF=0 AND ZF=0
-      lookup l (fun rip =>
-      jump_if s (!s.flags.cf && !s.flags.zf) rip ret)
+      let cond := match cc with
+        | .z  => s.flags.zf           -- Zero: ZF=1
+        | .nz => !s.flags.zf          -- Not Zero: ZF=0
+        | .b  => s.flags.cf           -- Below: CF=1
+        | .ae => !s.flags.cf          -- Above/Equal: CF=0
+        | .a  => !s.flags.cf && !s.flags.zf  -- Above: CF=0 ∧ ZF=0
+        | .be => s.flags.cf || s.flags.zf    -- Below/Equal: CF=1 ∨ ZF=1
+      jump_if s cond rip ret)
   | _ => throw s!"unsupported control instruction {repr i}"
 
 abbrev Program := List (Option Label × Instr)
@@ -690,7 +678,7 @@ example (s_old: MachineState) (h_bound: (s_old.getReg .rax).toNat + 2 < 2^64):
 
 def p2: Program := [
   (.some "start", .mov (.reg .rax) (.imm 1)),
-  (.none,         .jz "start"),
+  (.none,         .jcc .z "start"),
   (.none,         .mov (.reg .rax) (.imm 2)),
 ]
 
@@ -761,7 +749,7 @@ def p3: Program := [
   -- (.none,         .mov (.reg .rbx) (.imm 4)),                -- rbx: loop counter = 4
   (.none,         .mov (.reg .rdx) (.imm 2)),                -- rdx: current result = 2
   (.some "start", .sub (.reg .rbx) (.imm 0)),                -- TEST: zf = (rbx == 0)
-  (.none        , .jz "end"),                                  -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
+  (.none        , .jcc .z "end"),                                  -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
   (.none        , .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)),  -- BODY: rdx := rdx * rdx
   (.none,         .sub (.reg .rbx) (.imm 1)),                -- rbx -= 1
   (.none,         .jmp "start"),                               -- go back to test & loop body
