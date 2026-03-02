@@ -1,0 +1,15 @@
+name = "KrakenExp"
+version = "0.1.0"
+defaultTargets = ["KrakenExp"]
+
+[[require]]
+name = "Kraken"
+path = ".."
+
+[[require]]
+name = "std"
+scope = "leanprover"
+rev = "main"
+
+[[lean_lib]]
+name = "KrakenExp"

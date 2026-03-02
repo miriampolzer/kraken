@@ -1,12 +1,11 @@
-name = "kraken"
+name = "Kraken"
 version = "0.1.0"
-defaultTargets = ["kraken"]
+defaultTargets = ["Kraken"]
+
+[[require]]
+name = "std"
+scope = "leanprover"
+rev = "main"
 
 [[lean_lib]]
-name = "AsmInterp"
-
-
-
-[[lean_exe]]
-name = "kraken"
-root = "Main"
+name = "Kraken"

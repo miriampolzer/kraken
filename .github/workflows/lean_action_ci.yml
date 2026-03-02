@@ -6,9 +6,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-core:
+    name: Build Kraken (4.22.0)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leanprover/lean-action@v1
 
+  build-experimental:
+    name: Build KrakenExp (4.28.0)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kraken-experimental
     steps:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
