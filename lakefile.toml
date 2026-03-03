@@ -2,10 +2,5 @@ name = "Kraken"
 version = "0.1.0"
 defaultTargets = ["Kraken"]
 
-[[require]]
-name = "std"
-scope = "leanprover"
-rev = "main"
-
 [[lean_lib]]
 name = "Kraken"

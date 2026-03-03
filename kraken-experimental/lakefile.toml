@@ -6,10 +6,5 @@ defaultTargets = ["KrakenExp"]
 name = "Kraken"
 path = ".."
 
-[[require]]
-name = "std"
-scope = "leanprover"
-rev = "main"
-
 [[lean_lib]]
 name = "KrakenExp"
