@@ -1,10 +1,12 @@
-name = "asm-interp"
+name = "kraken"
 version = "0.1.0"
-defaultTargets = ["asm-interp"]
+defaultTargets = ["kraken"]
 
 [[lean_lib]]
 name = "AsmInterp"
 
+
+
 [[lean_exe]]
-name = "asm-interp"
+name = "kraken"
 root = "Main"
