@@ -66,6 +66,36 @@ _start:
     orl $0x00FF00FF, %r8d
     # Expected: r8 = 0xFFFFFFFF
 
+    # ----- 32-bit negate (negl) -----
+    movl $42, %r9d
+    negl %r9d
+    # Expected: r9d = -42 (two's complement, zero-extended)
+
+    # ----- 32-bit NOT (notl) -----
+    movl $0xAAAAAAAA, %r10d
+    notl %r10d
+    # Expected: r10d = 0x55555555
+
+    # ----- 32-bit decrement (decl) -----
+    movl $100, %r11d
+    decl %r11d
+    # Expected: r11d = 99
+
+    # ----- 32-bit LEA (leal) -----
+    movq $10, %r12
+    leal 5(%r12), %r13d
+    # Expected: r13 = 15 (zero-extended)
+
+    # ----- 32-bit compare (cmpl) -----
+    movl $50, %r14d
+    cmpl $50, %r14d
+    # Expected: ZF=1
+
+    # ----- 32-bit shift left (shll) -----
+    movl $1, %r15d
+    shll $4, %r15d
+    # Expected: r15d = 16
+
     jmp _kraken_capture
 
 # ====== KRAKEN CAPTURE EPILOGUE ======

@@ -52,6 +52,33 @@ _start:
     rorq $1, %rsi
     # Expected: rsi = 0xC000000000000000 (LSB wraps to MSB)
 
+    # ----- Double-precision shift left (SHLD) -----
+    movq $0xFF00000000000000, %rdi
+    movq $0x00000000000000FF, %r8
+    shldq $8, %r8, %rdi
+    # Expected: rdi shifted left 8, filled with high bits of r8
+
+    # ----- Double-precision shift right (SHRD) -----
+    movq $0x00000000000000FF, %r9
+    movq $0xFF00000000000000, %r10
+    shrdq $8, %r10, %r9
+    # Expected: r9 shifted right 8, filled with low bits of r10
+
+    # ----- 32-bit shift right (shrl) -----
+    movl $0x80000000, %r11d
+    shrl $4, %r11d
+    # Expected: r11d = 0x08000000
+
+    # ----- 32-bit rotate left (roll) -----
+    movl $0x80000001, %r12d
+    roll $1, %r12d
+    # Expected: r12d = 0x00000003
+
+    # ----- 32-bit rotate right (rorl) -----
+    movl $0x80000001, %r13d
+    rorl $1, %r13d
+    # Expected: r13d = 0xC0000000
+
     jmp _kraken_capture
 
 # ====== KRAKEN CAPTURE EPILOGUE ======

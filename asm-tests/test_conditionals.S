@@ -48,6 +48,21 @@ _start:
     setnc %sil                       # sil = 1 (CF not set after last addq)
     # Expected: rsi = 1
 
+    # ----- PUSH / POP -----
+    movq $0x1234567890ABCDEF, %rdi
+    push %rdi
+    pop %r8
+    # Expected: r8 = 0x1234567890ABCDEF
+
+    # Initialize remaining registers
+    movq $300, %r9
+    movq $400, %r10
+    movq $500, %r11
+    movq $600, %r12
+    movq $700, %r13
+    movq $800, %r14
+    movq $42, %r15
+
     jmp _kraken_capture
 
 # ====== KRAKEN CAPTURE EPILOGUE ======

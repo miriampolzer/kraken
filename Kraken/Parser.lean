@@ -459,11 +459,11 @@ def parseInstr : Parser Instr := do
     let dst ← parseRegOrMem
     pure (.setnc dst)
 
-  -- Conditional moves
-  | "cmovc" | "cmovb" => do
+  -- Conditional moves (64-bit only - non-q variants are 32-bit which we don't support)
+  | "cmovcq" | "cmovbq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.cmovc dst src)
-  | "cmove" | "cmovz" => do
+  | "cmoveq" | "cmovzq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.cmove dst src)
 
