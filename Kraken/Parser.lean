@@ -125,15 +125,25 @@ def parseReg32 : Parser Reg := do
 -- Operand Parsing
 -- ============================================================================
 
-/-- Parse an immediate operand: $42, $-17, $0xff. -/
+/-- Parse an immediate operand: $42, $-17, $0xff.
+    Accepts any 64-bit value (0 to 2^64-1) as a bit pattern.
+    Values like $0xFFFFFFFFFFFFFFFF are interpreted as -1 in two's complement. -/
 def parseImm : Parser Operand := do
   skipHWs
   let _ ← pchar '$'
   let v ← parseInt
-  -- Validate range for Int64
-  if v < -9223372036854775808 || v > 9223372036854775807 then
-    fail s!"immediate {v} out of Int64 range"
-  pure (.imm (Int64.ofInt v))
+  -- Accept any value that fits in 64 bits
+  -- Negative values: must be >= Int64.min (-2^63)
+  -- Positive values: must be < 2^64 (allows unsigned representation like 0xFFFFFFFFFFFFFFFF)
+  if v < -9223372036854775808 || v >= 18446744073709551616 then
+    fail s!"immediate {v} out of 64-bit range"
+  -- Convert to Int64: values > Int64.max are reinterpreted as negative (two's complement)
+  let i64 := if v > 9223372036854775807 then
+    -- Reinterpret large positive value as negative two's complement
+    Int64.ofInt (v - 18446744073709551616)
+  else
+    Int64.ofInt v
+  pure (.imm i64)
 
 /-- Parse a memory operand: disp(%base), (%base,%idx,scale), etc. -/
 def parseMemory : Parser Operand := do
