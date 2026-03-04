@@ -239,109 +239,98 @@ def parseInstr : Parser Instr := do
   skipHWs
   let mnemonic ← parseName
   let mn := mnemonic.toLower
-  -- Strip size suffix for matching
-  let base :=
-    if mn.endsWith "q" then mn.dropRight 1
-    else if mn.endsWith "l" then mn.dropRight 1
-    else mn
-  match base with
-  -- Arithmetic (two-operand: src, dst)
-  | "add" => do
+  -- Match on full mnemonic name (no suffix stripping)
+  match mn with
+  -- Arithmetic (two-operand: src, dst) - 64-bit
+  | "add" | "addq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.add dst src)
-  | "adc" => do
+  | "adc" | "adcq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.adc dst src)
-  | "adcx" => do
+  | "adcx" | "adcxq" => do
     -- Per Intel SDM: ADCX dest must be a register (r32/r64)
     let src ← parseRegOrMem; parseComma; let dst ← parseRegOperand
     pure (.adcx dst src)
-  | "adox" => do
+  | "adox" | "adoxq" => do
     -- Per Intel SDM: ADOX dest must be a register (r32/r64)
     let src ← parseRegOrMem; parseComma; let dst ← parseRegOperand
     pure (.adox dst src)
-  | "sub" => do
+  | "sub" | "subq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.sub dst src)
-  | "sbb" => do
+  | "sbb" | "sbbq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.sbb dst src)
-  | "mul" => do
+  | "mul" | "mulq" => do
     let src ← parseRegOrMem
     pure (.mul src)
-  | "mulx" => do
+  | "mulx" | "mulxq" => do
     -- Per Intel SDM: MULX dest1 and dest2 must be registers
     -- mulxq src, lo, hi (AT&T: src → rdx*src, result in lo:hi)
     let src ← parseRegOrMem; parseComma
     let lo ← parseRegOperand; parseComma
     let hi ← parseRegOperand
     pure (.mulx hi lo src)
-  | "imul" => do
+  | "imul" | "imulq" => do
     let src ← parseRegOrMem; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.imul dst src)
-  | "neg" => do
+  | "neg" | "negq" => do
     let dst ← parseRegOrMem
     pure (.neg dst)
-  | "dec" => do
+  | "dec" | "decq" => do
     let dst ← parseRegOrMem
     pure (.dec dst)
 
-  -- Move/Load
-  | "mov" | "movabs" => do
+  -- Move/Load - 64-bit
+  | "mov" | "movq" | "movabs" | "movabsq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
-    -- Check if this should be movl (32-bit suffix)
-    if mn.endsWith "l" then
-      -- movl requires 32-bit registers; validate dst is 32-bit
-      match dst with
-      | .reg _ =>
-        -- The register was already parsed - we need to check it was 32-bit
-        -- This is a simplification; ideally we'd track this in parseRegOrMem
-        -- For now, we issue the movl instruction which semantics handles as zero-extend
-        pure (.movl dst src)
-      | _ => pure (.movl dst src)
-    else
-      pure (.mov dst src)
-  | "lea" => do
+    pure (.mov dst src)
+  | "movl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    checkNoTwoMemory src dst
+    pure (.movl dst src)
+  | "lea" | "leaq" => do
     let src ← parseMemory; parseComma
     let dst ← parseReg64
     pure (.lea dst src)
 
-  -- Bitwise
-  | "xor" => do
+  -- Bitwise - 64-bit
+  | "xor" | "xorq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.xor dst src)
-  | "and" => do
+  | "and" | "andq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.and dst src)
-  | "or" => do
+  | "or" | "orq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.or dst src)
 
-  -- Compare
-  | "cmp" => do
+  -- Compare - 64-bit
+  | "cmp" | "cmpq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.cmp dst src)
 
   -- Control flow - unconditional jump
-  | "jmp" => do
+  | "jmp" | "jmpq" => do
     skipHWs
     let target ← parseName
     pure (.jmp target)
 
   -- Control flow - conditional jumps
   | _ =>
-    if base.startsWith "j" then do
-      match parseCondCode (base.drop 1) with
+    if mn.startsWith "j" then do
+      match parseCondCode (mn.drop 1) with
       | .ok cc => do
         skipHWs
         let target ← parseName
