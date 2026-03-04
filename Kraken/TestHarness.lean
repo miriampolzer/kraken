@@ -38,23 +38,23 @@ def genCaptureDataRegs : String :=
   ".data\n" ++
   ".align 8\n" ++
   "# Final register state (filled by capture epilogue)\n" ++
-  "final_rax: .quad 0\n" ++
-  "final_rbx: .quad 0\n" ++
-  "final_rcx: .quad 0\n" ++
-  "final_rdx: .quad 0\n" ++
-  "final_rsi: .quad 0\n" ++
-  "final_rdi: .quad 0\n" ++
-  "final_rsp: .quad 0\n" ++
-  "final_rbp: .quad 0\n" ++
-  "final_r8: .quad 0\n" ++
-  "final_r9: .quad 0\n" ++
-  "final_r10: .quad 0\n" ++
-  "final_r11: .quad 0\n" ++
-  "final_r12: .quad 0\n" ++
-  "final_r13: .quad 0\n" ++
-  "final_r14: .quad 0\n" ++
-  "final_r15: .quad 0\n" ++
-  "final_flags: .quad 0\n"
+  "_kraken_final_rax: .quad 0\n" ++
+  "_kraken_final_rbx: .quad 0\n" ++
+  "_kraken_final_rcx: .quad 0\n" ++
+  "_kraken_final_rdx: .quad 0\n" ++
+  "_kraken_final_rsi: .quad 0\n" ++
+  "_kraken_final_rdi: .quad 0\n" ++
+  "_kraken_final_rsp: .quad 0\n" ++
+  "_kraken_final_rbp: .quad 0\n" ++
+  "_kraken_final_r8: .quad 0\n" ++
+  "_kraken_final_r9: .quad 0\n" ++
+  "_kraken_final_r10: .quad 0\n" ++
+  "_kraken_final_r11: .quad 0\n" ++
+  "_kraken_final_r12: .quad 0\n" ++
+  "_kraken_final_r13: .quad 0\n" ++
+  "_kraken_final_r14: .quad 0\n" ++
+  "_kraken_final_r15: .quad 0\n" ++
+  "_kraken_final_flags: .quad 0\n"
 
 /-- Generate .data section for memory region tracking. -/
 def genCaptureDataMem (regions : List MemRegion) : String :=
@@ -62,11 +62,11 @@ def genCaptureDataMem (regions : List MemRegion) : String :=
   else
     let regionData := regions.enum.map fun (i, r) =>
       s!"# Memory region {i}: base={r.base}, size={r.size} words\n" ++
-      s!"mem_region_{i}_base: .quad {r.base.toNat}\n" ++
-      s!"mem_region_{i}_size: .quad {r.size}\n" ++
-      s!"mem_region_{i}_data: .space {r.size * 8}\n"
+      s!"_kraken_mem_region_{i}_base: .quad {r.base.toNat}\n" ++
+      s!"_kraken_mem_region_{i}_size: .quad {r.size}\n" ++
+      s!"_kraken_mem_region_{i}_data: .space {r.size * 8}\n"
     "\n# Memory regions to track\n" ++
-    s!"mem_region_count: .quad {regions.length}\n" ++
+    s!"_kraken_mem_region_count: .quad {regions.length}\n" ++
     String.intercalate "\n" regionData
 
 /-- Generate full .data section for capture (registers + optional memory). -/
@@ -76,26 +76,26 @@ def genCaptureData (memRegions : List MemRegion := []) : String :=
 /-- Generate assembly to save registers to .data section. -/
 def genSaveRegisters : String :=
   "    # Save all registers to .data section\n" ++
-  "    movq %rax, final_rax(%rip)\n" ++
-  "    movq %rbx, final_rbx(%rip)\n" ++
-  "    movq %rcx, final_rcx(%rip)\n" ++
-  "    movq %rdx, final_rdx(%rip)\n" ++
-  "    movq %rsi, final_rsi(%rip)\n" ++
-  "    movq %rdi, final_rdi(%rip)\n" ++
-  "    movq %rsp, final_rsp(%rip)\n" ++
-  "    movq %rbp, final_rbp(%rip)\n" ++
-  "    movq %r8,  final_r8(%rip)\n" ++
-  "    movq %r9,  final_r9(%rip)\n" ++
-  "    movq %r10, final_r10(%rip)\n" ++
-  "    movq %r11, final_r11(%rip)\n" ++
-  "    movq %r12, final_r12(%rip)\n" ++
-  "    movq %r13, final_r13(%rip)\n" ++
-  "    movq %r14, final_r14(%rip)\n" ++
-  "    movq %r15, final_r15(%rip)\n" ++
+  "    movq %rax, _kraken_final_rax(%rip)\n" ++
+  "    movq %rbx, _kraken_final_rbx(%rip)\n" ++
+  "    movq %rcx, _kraken_final_rcx(%rip)\n" ++
+  "    movq %rdx, _kraken_final_rdx(%rip)\n" ++
+  "    movq %rsi, _kraken_final_rsi(%rip)\n" ++
+  "    movq %rdi, _kraken_final_rdi(%rip)\n" ++
+  "    movq %rsp, _kraken_final_rsp(%rip)\n" ++
+  "    movq %rbp, _kraken_final_rbp(%rip)\n" ++
+  "    movq %r8,  _kraken_final_r8(%rip)\n" ++
+  "    movq %r9,  _kraken_final_r9(%rip)\n" ++
+  "    movq %r10, _kraken_final_r10(%rip)\n" ++
+  "    movq %r11, _kraken_final_r11(%rip)\n" ++
+  "    movq %r12, _kraken_final_r12(%rip)\n" ++
+  "    movq %r13, _kraken_final_r13(%rip)\n" ++
+  "    movq %r14, _kraken_final_r14(%rip)\n" ++
+  "    movq %r15, _kraken_final_r15(%rip)\n" ++
   "    # Save flags\n" ++
   "    pushfq\n" ++
   "    popq %rax\n" ++
-  "    movq %rax, final_flags(%rip)\n"
+  "    movq %rax, _kraken_final_flags(%rip)\n"
 
 /-- Generate assembly to copy memory regions to dump buffers. -/
 def genCopyMemoryRegions (regions : List MemRegion) : String :=
@@ -103,8 +103,8 @@ def genCopyMemoryRegions (regions : List MemRegion) : String :=
   else
     let copies := regions.enum.map fun (i, r) =>
       s!"    # Copy memory region {i}\n" ++
-      s!"    movq mem_region_{i}_base(%rip), %rsi  # source = base\n" ++
-      s!"    leaq mem_region_{i}_data(%rip), %rdi  # dest = buffer\n" ++
+      s!"    movq _kraken_mem_region_{i}_base(%rip), %rsi  # source = base\n" ++
+      s!"    leaq _kraken_mem_region_{i}_data(%rip), %rdi  # dest = buffer\n" ++
       s!"    movq ${r.size}, %rcx                  # count = size words\n" ++
       s!"    rep movsq                             # copy\n"
     "\n    # Copy memory regions to dump buffers\n" ++
@@ -120,7 +120,7 @@ def calcOutputSize (regions : List MemRegion) : Nat :=
 /-- Generate assembly to write output to stdout and exit. -/
 def genWriteAndExit (regions : List MemRegion) : String :=
   let regBytes := 136
-  let memHeaderSize := if regions.isEmpty then 0 else 8 -- mem_region_count
+  let memHeaderSize := if regions.isEmpty then 0 else 8 -- _kraken_mem_region_count
   let memDataSize := regions.foldl (fun acc r => acc + 16 + r.size * 8) 0 -- base + size + data per region
   let totalBytes := regBytes + memHeaderSize + memDataSize
 
@@ -128,7 +128,7 @@ def genWriteAndExit (regions : List MemRegion) : String :=
   "    # Write register state to stdout (136 bytes)\n" ++
   "    movq $1, %rax         # sys_write\n" ++
   "    movq $1, %rdi         # stdout\n" ++
-  "    leaq final_rax(%rip), %rsi  # buffer start\n" ++
+  "    leaq _kraken_final_rax(%rip), %rsi  # buffer start\n" ++
   "    movq $136, %rdx       # 17 quads = 136 bytes\n" ++
   "    syscall\n" ++
   (if regions.isEmpty then ""
@@ -136,7 +136,7 @@ def genWriteAndExit (regions : List MemRegion) : String :=
     "\n    # Write memory region data to stdout\n" ++
     "    movq $1, %rax\n" ++
     "    movq $1, %rdi\n" ++
-    "    leaq mem_region_count(%rip), %rsi\n" ++
+    "    leaq _kraken_mem_region_count(%rip), %rsi\n" ++
     s!"    movq ${memHeaderSize + memDataSize}, %rdx\n" ++
     "    syscall\n") ++
   "\n    # Exit with code 0\n" ++

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Kraken Test Harness Runner
-# Usage: ./run_test.sh <test.S> [--hex]
+# Usage: ./run_asm_test.sh <test.S> [--hex]
 #
 # This script assembles, links, executes an assembly file and captures
 # the final register/flag state (136 bytes written to stdout).
@@ -31,14 +31,23 @@ trap "rm -rf $TMPDIR" EXIT
 OBJ_FILE="$TMPDIR/test.o"
 EXE_FILE="$TMPDIR/test"
 OUT_FILE="$TMPDIR/output.bin"
+ERR_FILE="$TMPDIR/error.log"
 
 # Assemble
 echo "Assembling $ASM_FILE..." >&2
-as -o "$OBJ_FILE" "$ASM_FILE"
+if ! as -o "$OBJ_FILE" "$ASM_FILE" 2>"$ERR_FILE"; then
+    echo "ERROR: Assembly failed:" >&2
+    cat "$ERR_FILE" >&2
+    exit 1
+fi
 
 # Link
 echo "Linking..." >&2
-ld -o "$EXE_FILE" "$OBJ_FILE"
+if ! ld -o "$EXE_FILE" "$OBJ_FILE" 2>"$ERR_FILE"; then
+    echo "ERROR: Linking failed:" >&2
+    cat "$ERR_FILE" >&2
+    exit 1
+fi
 
 # Run and capture stdout (136 bytes of binary data)
 echo "Running test..." >&2
@@ -60,5 +69,17 @@ else
     cat "$OUT_FILE"
 fi
 
+# Cross-platform file size (Linux: stat -c%s, macOS: stat -f%z)
+get_file_size() {
+    if stat -c%s "$1" 2>/dev/null; then
+        return
+    elif stat -f%z "$1" 2>/dev/null; then
+        return
+    else
+        wc -c < "$1" | tr -d ' '
+    fi
+}
+
 echo "" >&2
-echo "Success! Output size: $(stat -c%s "$OUT_FILE") bytes" >&2
+echo "Success! Output size: $(get_file_size "$OUT_FILE") bytes" >&2
+
