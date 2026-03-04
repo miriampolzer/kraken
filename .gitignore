@@ -1,2 +1,5 @@
 /.lake
 .vimsession
+# Build artifacts from test runs
+*.o
+asm-tests/test
