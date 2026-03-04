@@ -52,6 +52,33 @@ _start:
     movq $100, %rsi
     decq %rsi               # rsi = 99
 
+    # Test sbbq (subtract with borrow)
+    movq $10, %rdi
+    subq $20, %rdi          # rdi = -10, CF = 1
+    movq $100, %r8
+    sbbq $5, %r8            # r8 = 100 - 5 - 1 = 94
+
+    # Test adcxq (ADX: add with carry, only affects CF)
+    xorq %r9, %r9
+    movq $0xFFFFFFFFFFFFFFFF, %r9
+    addq $1, %r9            # r9 = 0, CF = 1
+    movq $10, %r10
+    adcxq %r9, %r10         # r10 = 10 + 0 + 1 = 11
+
+    # Test adoxq (ADX: add with overflow flag)
+    xorq %r11, %r11
+    movq $5, %r11
+    adoxq %r9, %r11         # r11 = 5 + 0 + OF (OF from prev)
+
+    # Test mulxq (BMI2: mulxq src, lo, hi means hi:lo = rdx * src)
+    movq $100, %rdx
+    movq $3, %r12
+    mulxq %r12, %r13, %r14  # r14:r13 = 100 * 3 = 300 (r13=300, r14=0)
+
+    # Test cmpq (64-bit compare)
+    movq $50, %r15
+    cmpq $50, %r15          # Should set ZF=1
+
     jmp _kraken_capture
 
 # ====== KRAKEN CAPTURE EPILOGUE ======
