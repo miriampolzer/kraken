@@ -877,14 +877,20 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       eval_reg_or_mem s dst (fun dst_v =>
       let cnt_masked := cnt.toNat % 64
       let result := (dst_v <<< cnt_masked.toUInt64) ||| (dst_v >>> (64 - cnt_masked).toUInt64)
-      set_reg_or_mem s dst result ret))
+      -- Per Intel SDM: CF = bit 0 of result (the bit that rotated from MSB to LSB)
+      let cf := (result &&& 1) != 0
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { s.flags with cf }})))
 
   | .ror dst count =>
       eval_operand s count (fun cnt =>
       eval_reg_or_mem s dst (fun dst_v =>
       let cnt_masked := cnt.toNat % 64
       let result := (dst_v >>> cnt_masked.toUInt64) ||| (dst_v <<< (64 - cnt_masked).toUInt64)
-      set_reg_or_mem s dst result ret))
+      -- Per Intel SDM: CF = MSB of result (the bit that rotated from LSB to MSB)
+      let cf := (result >>> 63) != 0
+      set_reg_or_mem s dst result (fun s =>
+      ret { s with flags := { s.flags with cf }})))
 
   | .roll dst count =>
       eval_operand s count (fun cnt =>
