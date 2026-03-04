@@ -280,6 +280,10 @@ def parseInstr : Parser Instr := do
     pure (.sbb dst src)
   | "mul" | "mulq" => do
     let src ← parseRegOrMem
+    -- Only 64-bit MUL is supported (mulb/mulw/mull have different semantics)
+    match src with
+    | .reg r => if r.width != .W64 then fail s!"mul only supports 64-bit operands, got {repr r}"
+    | _ => pure ()  -- Memory operands OK (assume 64-bit in 64-bit mode)
     pure (.mul src)
   | "mulx" | "mulxq" => do
     -- Per Intel SDM: MULX dest1 and dest2 must be registers
@@ -291,6 +295,10 @@ def parseInstr : Parser Instr := do
   | "imul" | "imulq" => do
     let src ← parseRegOrMem; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
+    -- Only 64-bit IMUL is supported (two-operand form)
+    match dst with
+    | .reg r => if r.width != .W64 then fail s!"imul only supports 64-bit operands, got {repr r}"
+    | _ => pure ()
     pure (.imul dst src)
   | "neg" | "negq" => do
     let dst ← parseRegOrMem

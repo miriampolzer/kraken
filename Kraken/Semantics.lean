@@ -12,7 +12,7 @@ import Std
 import Lean.Elab.Tactic.Grind
 
 -- ============================================================================
--- Width Type (from protz/aliased-registers design)
+-- Width Type
 -- ============================================================================
 
 /-- Operand width for multi-width instructions. -/
@@ -38,7 +38,7 @@ def Width.toMask : Width → UInt64
     - 32-bit: eax, ebx, ..., r15d (zero-extend on write per Intel SDM)
     - 16-bit: ax, bx, ..., r15w (preserve upper bits on write)
     - 8-bit low: al, bl, ..., r15b (preserve upper bits on write)
-    Based on protz/aliased-registers design, extended with 8-bit support. -/
+ -/
 inductive Reg
   -- 64-bit registers
   | rax | rbx | rcx | rdx
@@ -273,7 +273,7 @@ def Instr.is_ctrl
   | _ => false
 
 -- ============================================================================
--- Register Access (aliased register support from protz's design)
+-- Register Access
 -- ============================================================================
 
 /-- Read low 8 bits. -/
@@ -623,7 +623,7 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       -- mulq (64-bit only): RDX:RAX = RAX * src
       -- Note: Other widths (mulb/mulw/mull) would need separate instruction variants
       -- since they read from AL/AX/EAX and write to AX/DX:AX/EDX:EAX respectively.
-      -- The parser rejects non-64-bit variants. See: https://www.felixcloutier.com/x86/mul
+      -- The parser validates that operands are 64-bit. See: https://www.felixcloutier.com/x86/mul
       eval_reg_or_mem s src (fun src_v =>
       let rax_v := s.getReg .rax
       let result := rax_v.toNat * src_v.toNat
@@ -647,7 +647,7 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
   | .imul dst src =>
       -- imulq (64-bit only): Two-operand form DEST := truncate(DEST × SRC) (signed)
       -- Note: Other widths (imulb/imulw/imull) would need different truncation/sign-extension.
-      -- The parser rejects non-64-bit variants. See: https://www.felixcloutier.com/x86/imul
+      -- The parser validates that operands are 64-bit. See: https://www.felixcloutier.com/x86/imul
       -- OF/CF set when signed result doesn't fit in destination size
       eval_reg_or_mem s src (fun src_v =>
       eval_reg_or_mem s dst (fun dst_v =>
