@@ -428,19 +428,20 @@ def parseInstr : Parser Instr := do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.orl dst src)
 
-  -- Move variants
+  -- Move variants - 16-bit
   | "movw" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.movw dst src)
+  -- Zero-extending moves
   | "movzbl" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.movzbl dst src)
-  | "movzwl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.movzwl dst src)
   | "movzbq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.movzbq dst src)
+  | "movzwl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.movzwl dst src)
 
   -- Set byte on condition
   | "setc" | "setb" => do
