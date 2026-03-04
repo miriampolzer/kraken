@@ -79,46 +79,48 @@ def parseName : Parser String := do
 -- Register Parsing
 -- ============================================================================
 
-/-- Parse a register name. Returns the Reg and whether it was a 32-bit alias. -/
-def parseRegName : Parser (Reg × Bool) := do
+/-- Parse a register name. Returns the Reg (may be an alias like eax, ax, al). -/
+def parseRegName : Parser Reg := do
   let name ← parseName
   match name.toLower with
   -- 64-bit registers
-  | "rax" => pure (.rax, false) | "rbx" => pure (.rbx, false)
-  | "rcx" => pure (.rcx, false) | "rdx" => pure (.rdx, false)
-  | "rsi" => pure (.rsi, false) | "rdi" => pure (.rdi, false)
-  | "rsp" => pure (.rsp, false) | "rbp" => pure (.rbp, false)
-  | "r8"  => pure (.r8,  false) | "r9"  => pure (.r9,  false)
-  | "r10" => pure (.r10, false) | "r11" => pure (.r11, false)
-  | "r12" => pure (.r12, false) | "r13" => pure (.r13, false)
-  | "r14" => pure (.r14, false) | "r15" => pure (.r15, false)
-  -- 32-bit aliases (zero-extend to 64-bit when written)
-  | "eax" => pure (.rax, true) | "ebx" => pure (.rbx, true)
-  | "ecx" => pure (.rcx, true) | "edx" => pure (.rdx, true)
-  | "esi" => pure (.rsi, true) | "edi" => pure (.rdi, true)
-  | "esp" => pure (.rsp, true) | "ebp" => pure (.rbp, true)
-  | "r8d"  => pure (.r8,  true) | "r9d"  => pure (.r9,  true)
-  | "r10d" => pure (.r10, true) | "r11d" => pure (.r11, true)
-  | "r12d" => pure (.r12, true) | "r13d" => pure (.r13, true)
-  | "r14d" => pure (.r14, true) | "r15d" => pure (.r15, true)
+  | "rax" => pure .rax | "rbx" => pure .rbx | "rcx" => pure .rcx | "rdx" => pure .rdx
+  | "rsi" => pure .rsi | "rdi" => pure .rdi | "rsp" => pure .rsp | "rbp" => pure .rbp
+  | "r8"  => pure .r8  | "r9"  => pure .r9  | "r10" => pure .r10 | "r11" => pure .r11
+  | "r12" => pure .r12 | "r13" => pure .r13 | "r14" => pure .r14 | "r15" => pure .r15
+  -- 32-bit aliases
+  | "eax" => pure .eax | "ebx" => pure .ebx | "ecx" => pure .ecx | "edx" => pure .edx
+  | "esi" => pure .esi | "edi" => pure .edi | "esp" => pure .esp | "ebp" => pure .ebp
+  | "r8d"  => pure .r8d  | "r9d"  => pure .r9d  | "r10d" => pure .r10d | "r11d" => pure .r11d
+  | "r12d" => pure .r12d | "r13d" => pure .r13d | "r14d" => pure .r14d | "r15d" => pure .r15d
+  -- 16-bit aliases
+  | "ax" => pure .ax | "bx" => pure .bx | "cx" => pure .cx | "dx" => pure .dx
+  | "si" => pure .si | "di" => pure .di | "sp" => pure .sp | "bp" => pure .bp
+  | "r8w"  => pure .r8w  | "r9w"  => pure .r9w  | "r10w" => pure .r10w | "r11w" => pure .r11w
+  | "r12w" => pure .r12w | "r13w" => pure .r13w | "r14w" => pure .r14w | "r15w" => pure .r15w
+  -- 8-bit aliases
+  | "al" => pure .al | "bl" => pure .bl | "cl" => pure .cl | "dl" => pure .dl
+  | "sil" => pure .sil | "dil" => pure .dil | "spl" => pure .spl | "bpl" => pure .bpl
+  | "r8b"  => pure .r8b  | "r9b"  => pure .r9b  | "r10b" => pure .r10b | "r11b" => pure .r11b
+  | "r12b" => pure .r12b | "r13b" => pure .r13b | "r14b" => pure .r14b | "r15b" => pure .r15b
   | _ => fail s!"unknown register: {name}"
 
-/-- Parse a register operand: %rax, %r15, etc. Returns (Reg, is32bit). -/
-def parseReg : Parser (Reg × Bool) := do
+/-- Parse a register operand: %rax, %eax, %ax, %al, etc. -/
+def parseReg : Parser Reg := do
   skipHWs
   let _ ← pchar '%'
   parseRegName
 
 /-- Parse a register, requiring 64-bit. -/
 def parseReg64 : Parser Reg := do
-  let (r, is32) ← parseReg
-  if is32 then fail "expected 64-bit register"
+  let r ← parseReg
+  if r.width != .W64 then fail "expected 64-bit register"
   else pure r
 
-/-- Parse a register, requiring 32-bit (for movl etc.). Returns the underlying 64-bit Reg. -/
+/-- Parse a register, requiring 32-bit. -/
 def parseReg32 : Parser Reg := do
-  let (r, is32) ← parseReg
-  if !is32 then fail "expected 32-bit register for 'l' suffix instruction"
+  let r ← parseReg
+  if r.width != .W32 then fail "expected 32-bit register"
   else pure r
 
 -- ============================================================================
@@ -180,7 +182,7 @@ def parseOperand : Parser Operand := do
   skipHWs
   let c ← peek!
   if c == '%' then
-    let (r, _) ← parseReg
+    let r ← parseReg
     pure (.reg r)
   else if c == '$' then
     parseImm
@@ -194,7 +196,7 @@ def parseRegOrMem : Parser Operand := do
   skipHWs
   let c ← peek!
   if c == '%' then
-    let (r, _) ← parseReg
+    let r ← parseReg
     pure (.reg r)
   else if c == '(' || c == '-' || c.isDigit then
     parseMemory
@@ -330,6 +332,126 @@ def parseInstr : Parser Instr := do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     checkNoTwoMemory src dst
     pure (.cmp dst src)
+
+  -- 32-bit compare variants
+  | "cmpl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.cmpl dst src)
+  | "cmpb" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.cmpb dst src)
+
+  -- Test (sets flags based on AND without storing result)
+  | "test" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.test dst src)
+
+  -- Shift instructions
+  | "shl" | "sal" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    if mn.endsWith "l" then pure (.shll dst cnt) else pure (.shl dst cnt)
+  | "shr" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    if mn.endsWith "l" then pure (.shrl dst cnt) else pure (.shr dst cnt)
+  | "sar" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.sar dst cnt)
+  | "shld" => do
+    -- shld %cl, %src, %dst (shift dst left, fill with src high bits)
+    let cnt ← parseOperand; parseComma
+    let src ← parseRegOrMem; parseComma
+    let dst ← parseRegOrMem
+    pure (.shld dst src cnt)
+  | "shrd" => do
+    let cnt ← parseOperand; parseComma
+    let src ← parseRegOrMem; parseComma
+    let dst ← parseRegOrMem
+    pure (.shrd dst src cnt)
+
+  -- Rotate instructions
+  | "rol" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    if mn.endsWith "l" then pure (.roll dst cnt) else pure (.rol dst cnt)
+  | "ror" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    if mn.endsWith "l" then pure (.rorl dst cnt) else pure (.ror dst cnt)
+
+  -- Byte swap
+  | "bswap" => do
+    let dst ← parseRegOrMem
+    if mn.endsWith "l" then pure (.bswapl dst) else pure (.bswap dst)
+
+  -- 32-bit arithmetic
+  | "addl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.addl dst src)
+  | "subl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.subl dst src)
+  | "negl" => do
+    let dst ← parseRegOrMem
+    pure (.negl dst)
+  | "notl" => do
+    let dst ← parseRegOrMem
+    pure (.notl dst)
+  | "decl" => do
+    let dst ← parseRegOrMem
+    pure (.decl dst)
+  | "leal" => do
+    let src ← parseMemory; parseComma
+    let dst ← parseReg32
+    pure (.leal dst src)
+
+  -- 32-bit bitwise
+  | "xorl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.xorl dst src)
+  | "andl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.andl dst src)
+  | "orl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.orl dst src)
+
+  -- Move variants
+  | "movw" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.movw dst src)
+  | "movzbl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.movzbl dst src)
+  | "movzwl" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.movzwl dst src)
+  | "movzbq" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.movzbq dst src)
+
+  -- Set byte on condition
+  | "setc" | "setb" => do
+    let dst ← parseRegOrMem
+    pure (.setc dst)
+  | "setnc" | "setae" | "setnb" => do
+    let dst ← parseRegOrMem
+    pure (.setnc dst)
+
+  -- Conditional moves
+  | "cmovc" | "cmovb" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.cmovc dst src)
+  | "cmove" | "cmovz" => do
+    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.cmove dst src)
+
+  -- Stack operations
+  | "push" => do
+    let src ← parseOperand
+    pure (.push src)
+  | "pop" => do
+    let dst ← parseRegOrMem
+    pure (.pop dst)
+  | "ret" | "retq" =>
+    pure .ret
 
   -- Control flow - unconditional jump
   | "jmp" | "jmpq" => do
