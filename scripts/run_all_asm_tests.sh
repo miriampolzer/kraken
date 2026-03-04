@@ -1,39 +1,39 @@
 #!/bin/bash
-# Run all assembly tests and display results
-# Usage: ./run_all_asm_tests.sh [--verbose]
+# Run all assembly tests comparing AS execution against Kraken's eval
+# Usage: ./run_all_asm_tests.sh
 
 set -e
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/../asm-tests"
 
-VERBOSE="${1:-}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ASM_TESTS_DIR="$SCRIPT_DIR/../asm-tests"
+
 PASSED=0
 FAILED=0
+FAILED_TESTS=""
 
 echo "========================================"
 echo "Kraken Assembly Test Suite"
 echo "========================================"
 echo ""
 
-for test_file in test_*.S; do
-    name="${test_file%.S}"
+for test_file in "$ASM_TESTS_DIR"/test_*.S; do
+    name=$(basename "${test_file%.S}")
     echo -n "Running $name... "
 
-    # Run the test
-    if "$SCRIPT_DIR/run_asm_test.sh" "$test_file" > "/tmp/${name}.bin" 2>/tmp/test_err.txt; then
-        size=$(stat -c%s "/tmp/${name}.bin")
-        echo "✓ ($size bytes)"
-        PASSED=$((PASSED + 1))
-
-        if [ "$VERBOSE" == "--verbose" ]; then
-            echo "  Output:"
-            xxd "/tmp/${name}.bin" | head -10 | sed 's/^/    /'
-            echo ""
+    if "$SCRIPT_DIR/run_asm_test.sh" "$test_file" > /tmp/test_output.txt 2>&1; then
+        result=$(cat /tmp/test_output.txt)
+        if echo "$result" | grep -q "^PASS"; then
+            echo "✓"
+            PASSED=$((PASSED + 1))
+        else
+            echo "✗"
+            FAILED=$((FAILED + 1))
+            FAILED_TESTS="$FAILED_TESTS\n  $name: $result"
         fi
     else
-        echo "✗ FAILED"
+        echo "✗ (execution error)"
         FAILED=$((FAILED + 1))
-        cat /tmp/test_err.txt | sed 's/^/  /'
+        FAILED_TESTS="$FAILED_TESTS\n  $name: $(cat /tmp/test_output.txt)"
     fi
 done
 
@@ -43,5 +43,8 @@ echo "Results: $PASSED passed, $FAILED failed"
 echo "========================================"
 
 if [ $FAILED -gt 0 ]; then
+    echo -e "\nFailed tests:$FAILED_TESTS"
     exit 1
 fi
+
+exit 0

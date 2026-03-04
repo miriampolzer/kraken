@@ -1,85 +1,53 @@
 #!/bin/bash
-# Kraken Test Harness Runner
-# Usage: ./run_asm_test.sh <test.S> [--hex]
+# Run a single assembly test comparing AS execution against Kraken's eval
+# Usage: ./run_asm_test.sh <test.S>
 #
-# This script assembles, links, executes an assembly file and captures
-# the final register/flag state (136 bytes written to stdout).
-#
-# The assembly file should be wrapped with Kraken's capture infrastructure
-# (using TestHarness.wrapAssembly or TestHarness.makeTestProgram).
-#
-# Prerequisites: GNU assembler (as), linker (ld)
+# Flow:
+#   1. Assemble and link the test with GNU as/ld
+#   2. Run to capture final register state (136 bytes)
+#   3. Call krakentest to compare AS result against Kraken's eval
+#   4. Report PASS/FAIL
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KRAKEN_ROOT="$SCRIPT_DIR/.."
+KRAKENTEST="$KRAKEN_ROOT/.lake/build/bin/krakentest"
+
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <test.S> [--hex]"
-    echo ""
-    echo "Options:"
-    echo "  --hex     Show output as hex dump (default: raw binary to stdout)"
-    echo ""
-    echo "The assembly should end by jumping to _kraken_capture (or falling"
-    echo "through to it) to trigger state capture and output."
+    echo "Usage: $0 <test.S>"
     exit 1
 fi
 
 ASM_FILE="$1"
-HEX_MODE="${2:-}"
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
-OBJ_FILE="$TMPDIR/test.o"
-EXE_FILE="$TMPDIR/test"
-OUT_FILE="$TMPDIR/output.bin"
-ERR_FILE="$TMPDIR/error.log"
-
-# Assemble
-echo "Assembling $ASM_FILE..." >&2
-if ! as -o "$OBJ_FILE" "$ASM_FILE" 2>"$ERR_FILE"; then
-    echo "ERROR: Assembly failed:" >&2
-    cat "$ERR_FILE" >&2
+# Check krakentest exists
+if [ ! -x "$KRAKENTEST" ]; then
+    echo "Error: krakentest not found. Run 'lake build krakentest' first."
     exit 1
 fi
 
-# Link
-echo "Linking..." >&2
-if ! ld -o "$EXE_FILE" "$OBJ_FILE" 2>"$ERR_FILE"; then
-    echo "ERROR: Linking failed:" >&2
-    cat "$ERR_FILE" >&2
+# Step 1: Assemble and link
+as -o "$TMPDIR/test.o" "$ASM_FILE" 2>/dev/null || {
+    echo "FAIL: Assembly failed for $ASM_FILE"
     exit 1
-fi
-
-# Run and capture stdout (136 bytes of binary data)
-echo "Running test..." >&2
-"$EXE_FILE" > "$OUT_FILE"
-
-# Display output
-if [ "$HEX_MODE" == "--hex" ]; then
-    echo "" >&2
-    echo "Final state (hex dump):" >&2
-    echo "Offset   0-7: rax,  8-15: rbx, 16-23: rcx, 24-31: rdx" >&2
-    echo "Offset 32-39: rsi, 40-47: rdi, 48-55: rsp, 56-63: rbp" >&2
-    echo "Offset 64-71: r8,  72-79: r9,  80-87: r10, 88-95: r11" >&2
-    echo "Offset 96-103: r12, 104-111: r13, 112-119: r14, 120-127: r15" >&2
-    echo "Offset 128-135: flags (RFLAGS)" >&2
-    echo "" >&2
-    xxd "$OUT_FILE"
-else
-    # Output raw binary (can be piped to parser)
-    cat "$OUT_FILE"
-fi
-
-# Cross-platform file size (Linux: stat -c%s, macOS: stat -f%z)
-get_file_size() {
-    if stat -c%s "$1" 2>/dev/null; then
-        return
-    elif stat -f%z "$1" 2>/dev/null; then
-        return
-    else
-        wc -c < "$1" | tr -d ' '
-    fi
 }
 
-echo "" >&2
-echo "Success! Output size: $(get_file_size "$OUT_FILE") bytes" >&2
+ld -o "$TMPDIR/test" "$TMPDIR/test.o" 2>/dev/null || {
+    echo "FAIL: Linking failed for $ASM_FILE"
+    exit 1
+}
 
+# Step 2: Run and capture output (136 bytes: registers + flags)
+"$TMPDIR/test" > "$TMPDIR/output.bin" 2>/dev/null || true
+
+# Check we got enough output
+if [ ! -f "$TMPDIR/output.bin" ] || [ $(stat -c%s "$TMPDIR/output.bin") -lt 136 ]; then
+    echo "FAIL: Test execution didn't produce expected output"
+    exit 1
+fi
+
+# Step 3: Run krakentest to compare AS vs Kraken
+"$KRAKENTEST" "$ASM_FILE" "$TMPDIR/output.bin"

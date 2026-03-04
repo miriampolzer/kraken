@@ -4,3 +4,7 @@ defaultTargets = ["Kraken"]
 
 [[lean_lib]]
 name = "Kraken"
+
+[[lean_exe]]
+name = "krakentest"
+root = "KrakenTest"

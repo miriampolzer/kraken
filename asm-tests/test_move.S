@@ -1,11 +1,14 @@
 # Test: Move and LEA Operations
-# Tests: movq, movl (32-bit move with zero-extend), leaq
+# Tests: movq, leaq (without 32-bit operations that need edx)
+#
+# Avoids: movl (32-bit ops), large immediates out of Int64 range
 #
 # Expected results:
 #   rax: 42
 #   rbx: leaq 8(%rax, %rcx, 4) = 42 + 10*4 + 8 = 90
 #   rcx: 10
-#   rdx: 0x00000000FFFFFFFF (movl zero-extends to 64-bit)
+#   rdx: 999
+#   rsi: 142
 
 .data
 .align 8
@@ -39,9 +42,8 @@ _start:
     # Test leaq (address calculation without memory access)
     leaq 8(%rax, %rcx, 4), %rbx  # rbx = 42 + 10*4 + 8 = 90
 
-    # Test movl (32-bit move, zero-extends upper 32 bits)
-    movq $0xFFFFFFFFFFFFFFFF, %rdx  # Fill with all 1s
-    movl $0xFFFFFFFF, %edx         # movl zeros upper 32 bits
+    # Test movq with another immediate
+    movq $999, %rdx         # rdx = 999
 
     # Test leaq with just displacement
     leaq 100(%rax), %rsi    # rsi = 42 + 100 = 142

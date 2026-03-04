@@ -301,7 +301,8 @@ def sub_overflow_with_borrow (a b : UInt64) (borrow_in : Nat) : Bool :=
 -- Subtraction with borrow: dst - src - carry_in
 -- Returns (result, zf, cf, of)
 def sub_with_borrow (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
-  let unbounded := dst.toNat - src.toNat - carry_in
+  -- Use Int to handle negative results correctly (Nat subtraction saturates to 0)
+  let unbounded : Int := dst.toNat - src.toNat - carry_in
   let result64 := UInt64.ofInt unbounded
   let zf := result64 == 0
   let cf := src.toNat + carry_in > dst.toNat  -- Borrow if src+carry > dst (unsigned)
@@ -426,7 +427,8 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       -- Per Intel SDM: CF set unless operand is 0; OF set according to result
       -- OF is set when negating the most negative value (INT64_MIN)
       eval_reg_or_mem s dst (fun dst_v =>
-      let result := 0 - dst_v
+      -- Two's complement negation: negate via Int64 to ensure correct wrapping
+      let result := (-(dst_v.toInt64)).toUInt64
       let zf := result == 0
       let cf := dst_v != 0  -- CF is set unless operand is 0
       let of := dst_v == 0x8000000000000000  -- OF set when negating INT64_MIN
