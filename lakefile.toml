@@ -1,12 +1,10 @@
-name = "kraken"
+name = "Kraken"
 version = "0.1.0"
-defaultTargets = ["kraken"]
+defaultTargets = ["Kraken"]
 
 [[lean_lib]]
-name = "AsmInterp"
-
-
+name = "Kraken"
 
 [[lean_exe]]
-name = "kraken"
-root = "Main"
+name = "krakentest"
+root = "KrakenTest"
