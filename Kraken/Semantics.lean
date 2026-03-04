@@ -620,7 +620,10 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       ret { s with flags := { zf, of, cf }})))
 
   | .mul src =>
-      -- mulq: rdx:rax = rax * src
+      -- mulq (64-bit only): RDX:RAX = RAX * src
+      -- Note: Other widths (mulb/mulw/mull) would need separate instruction variants
+      -- since they read from AL/AX/EAX and write to AX/DX:AX/EDX:EAX respectively.
+      -- The parser rejects non-64-bit variants. See: https://www.felixcloutier.com/x86/mul
       eval_reg_or_mem s src (fun src_v =>
       let rax_v := s.getReg .rax
       let result := rax_v.toNat * src_v.toNat
@@ -642,8 +645,9 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
       set_reg s hi (UInt64.ofNat (result >>> 64)) ret))
 
   | .imul dst src =>
-      -- Per Intel SDM: IMUL performs SIGNED multiplication
-      -- Two-operand form: DEST := truncate(DEST × SRC) (signed)
+      -- imulq (64-bit only): Two-operand form DEST := truncate(DEST × SRC) (signed)
+      -- Note: Other widths (imulb/imulw/imull) would need different truncation/sign-extension.
+      -- The parser rejects non-64-bit variants. See: https://www.felixcloutier.com/x86/imul
       -- OF/CF set when signed result doesn't fit in destination size
       eval_reg_or_mem s src (fun src_v =>
       eval_reg_or_mem s dst (fun dst_v =>

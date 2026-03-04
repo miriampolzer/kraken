@@ -342,44 +342,59 @@ def parseInstr : Parser Instr := do
     pure (.cmpb dst src)
 
   -- Test (sets flags based on AND without storing result)
-  | "test" => do
+  | "test" | "testq" => do
     let src ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.test dst src)
 
-  -- Shift instructions
-  | "shl" | "sal" => do
+  -- Shift instructions - 64-bit
+  | "shl" | "shlq" | "sal" | "salq" => do
     let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    if mn.endsWith "l" then pure (.shll dst cnt) else pure (.shl dst cnt)
-  | "shr" => do
+    pure (.shl dst cnt)
+  | "shll" | "sall" => do
     let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    if mn.endsWith "l" then pure (.shrl dst cnt) else pure (.shr dst cnt)
-  | "sar" => do
+    pure (.shll dst cnt)
+  | "shr" | "shrq" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.shr dst cnt)
+  | "shrl" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.shrl dst cnt)
+  | "sar" | "sarq" => do
     let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
     pure (.sar dst cnt)
-  | "shld" => do
+  | "shld" | "shldq" => do
     -- shld %cl, %src, %dst (shift dst left, fill with src high bits)
     let cnt ← parseOperand; parseComma
     let src ← parseRegOrMem; parseComma
     let dst ← parseRegOrMem
     pure (.shld dst src cnt)
-  | "shrd" => do
+  | "shrd" | "shrdq" => do
     let cnt ← parseOperand; parseComma
     let src ← parseRegOrMem; parseComma
     let dst ← parseRegOrMem
     pure (.shrd dst src cnt)
 
-  -- Rotate instructions
-  | "rol" => do
+  -- Rotate instructions - 64-bit
+  | "rol" | "rolq" => do
     let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    if mn.endsWith "l" then pure (.roll dst cnt) else pure (.rol dst cnt)
-  | "ror" => do
+    pure (.rol dst cnt)
+  | "roll" => do
     let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    if mn.endsWith "l" then pure (.rorl dst cnt) else pure (.ror dst cnt)
+    pure (.roll dst cnt)
+  | "ror" | "rorq" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.ror dst cnt)
+  | "rorl" => do
+    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
+    pure (.rorl dst cnt)
 
   -- Byte swap
-  | "bswap" => do
+  | "bswap" | "bswapq" => do
     let dst ← parseRegOrMem
-    if mn.endsWith "l" then pure (.bswapl dst) else pure (.bswap dst)
+    pure (.bswap dst)
+  | "bswapl" => do
+    let dst ← parseRegOrMem
+    pure (.bswapl dst)
 
   -- 32-bit arithmetic
   | "addl" => do
