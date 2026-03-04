@@ -1,0 +1,10 @@
+name = "KrakenExp"
+version = "0.1.0"
+defaultTargets = ["KrakenExp"]
+
+[[require]]
+name = "Kraken"
+path = ".."
+
+[[lean_lib]]
+name = "KrakenExp"
