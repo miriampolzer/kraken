@@ -69,7 +69,7 @@ theorem p3_correct (initial: MachineState):
     initial.rip = 0 →
     eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial :=
   by
-  sorry -- too slow to work with for now
+  sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers)
   /-
     intros h_bounds h_rip
     simp [p3]
@@ -159,5 +159,5 @@ theorem p3_correct (initial: MachineState):
                   apply Nat.pow_le_pow_right (by decide)
                   apply Nat.pow_le_pow_right (by decide)
                   omega
--/
+  -/
 
