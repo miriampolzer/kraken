@@ -317,7 +317,7 @@ def Instr.is_ctrl
 
 /-- Get a register value with appropriate masking for aliased registers.
     Returns the value as seen through the register's width. -/
-@[simp] def Registers.get (regs : Registers) (r : Reg) : UInt64 :=
+def Registers.get (regs : Registers) (r : Reg) : UInt64 :=
   match r with
   -- 64-bit registers: direct read
   | .rax => regs.rax | .rbx => regs.rbx | .rcx => regs.rcx | .rdx => regs.rdx
@@ -357,7 +357,7 @@ def Instr.is_ctrl
     - 32-bit: zero-extends to 64-bit (clears upper 32 bits) per Intel SDM
     - 16-bit: preserves upper 48 bits
     - 8-bit: preserves upper 56 bits -/
-@[simp] def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
+def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
   match r with
   -- 64-bit registers: direct write
   | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
@@ -396,10 +396,10 @@ def Instr.is_ctrl
   | .r12b => { regs with r12 := write8 regs.r12 v } | .r13b => { regs with r13 := write8 regs.r13 v }
   | .r14b => { regs with r14 := write8 regs.r14 v } | .r15b => { regs with r15 := write8 regs.r15 v }
 
-@[simp] def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
+def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
   s.regs.get r
 
-@[simp] def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
+def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
 
 class Throw α where

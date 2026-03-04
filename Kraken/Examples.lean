@@ -17,7 +17,7 @@ def p1: Program := [
 
 -- OLD: doing things with a heavy-handed `simp`
 example: step1 p1 {} (fun s => s.regs.rax = 1) := by
-  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next]
+  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set]
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
 -- steps, and relying only on low-level tactics
