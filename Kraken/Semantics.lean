@@ -28,12 +28,24 @@ inductive Width | W8 | W16 | W32 | W64
 def Width.toNat : Width → Nat
   | W8 => 8 | W16 => 16 | W32 => 32 | W64 => 64
 
+def Width.toBytes : Width → UInt64
+  | W8 => 1 | W16 => 2 | W32 => 4 | W64 => 8
+
+def Width.toUInt64 (w: Width): UInt64 :=
+  w.toNat.toUInt64
+
 /-- Mask for extracting the low bits of the specified width. -/
 def Width.toMask : Width → UInt64
   | W8  => 0xFF
   | W16 => 0xFFFF
   | W32 => 0xFFFFFFFF
   | W64 => 0xFFFFFFFFFFFFFFFF
+
+/-- A shift mask -- see https://www.felixcloutier.com/x86/sal:sar:shl:shr
+    "The count is masked to 5 bits (or 6 bits with a 64-bit operand)" -/
+def Width.toShiftMask : Width → UInt64
+  | W64 => 0x1f
+  | _ => 0x0f
 
 -- ============================================================================
 -- Registers Enumeration (extended with aliases)
@@ -274,6 +286,20 @@ inductive Operand
   -- The default scale is 1 (SIB SS bits = 00). Scale must be explicit in AT&T syntax when != 1.
 deriving Repr, BEq
 
+-- There is one case where the variant of instruction cannot be determined --
+-- pushing an immediate to the stack. For that case, we annotate the immediate
+-- with a width.
+inductive TypedOperand
+| typed (o: Operand) (extra: if o matches Operand.imm _ then Width else Unit)
+
+instance : Repr TypedOperand where
+  reprPrec o n :=
+    match o with
+    | .typed (.imm i) w =>
+        let w: Width := w
+        Repr.reprPrec i n ++ "/" ++ Repr.reprPrec w n
+    | .typed o _ => Repr.reprPrec o n
+
 instance : Coe Reg Operand where coe := Operand.reg
 instance : Coe Int64 Operand where coe := Operand.imm
 attribute [coe] Operand.reg
@@ -301,7 +327,7 @@ inductive Instr
   | sub  (dst src : Operand)                   -- subq: dst -= src, sets CF, ZF, OF
   | sbb  (dst src : Operand)                   -- sbbq: dst -= src + CF, sets CF, ZF
   | mul  (src : Operand)                       -- mulq: rdx:rax = rax * src
-  | mulx (hi lo : Operand) (src : Operand)     -- mulxq: hi:lo = rdx * src (BMI2, no flags)
+  | mulx (hi lo : Reg) (src : Operand)     -- mulxq: hi:lo = rdx * src (BMI2, no flags)
   | imul (dst src : Operand)                   -- imulq: dst *= src (truncated, sets OF/CF)
   | neg  (dst : Operand)                       -- negq: dst = -dst, sets CF, ZF, OF
   | dec  (dst : Operand)                       -- decq: dst--, sets ZF (not CF!)
@@ -351,9 +377,10 @@ inductive Instr
   -- Compare (sets flags only)
   | cmp  (a b : Operand)                       -- cmpq: compute a - b, set flags
 
-  -- Stack operations
-  | push (src : Operand)                       -- pushq: RSP -= 8, [RSP] = src
-  | pop  (dst : Operand)                       -- popq: dst = [RSP], RSP += 8
+  -- Stack operations. Because `push` may take an immediate, we have to take a
+  -- width.
+  | push (src : TypedOperand)                  -- pushq: RSP -= N, [RSP] = src
+  | pop  (dst : Operand)                       -- popq: dst = [RSP], RSP += N
 
   -- Set byte on condition
   | setc  (dst : Operand)                      -- setc/setb: set byte to 1 if CF=1, else 0
@@ -392,22 +419,21 @@ def Instr.is_ctrl
 -- ============================================================================
 
 /-- Read low 8 bits. -/
-@[simp] def mask8 (x : UInt64) : UInt64 := x &&& 0xFF
+@[simp] def mask8 (x : UInt64) : UInt64 := x &&& Width.W8.toMask
 
 /-- Read low 16 bits. -/
-@[simp] def mask16 (x : UInt64) : UInt64 := x &&& 0xFFFF
+@[simp] def mask16 (x : UInt64) : UInt64 := x &&& Width.W16.toMask
 
 /-- Read low 32 bits. -/
-@[simp] def mask32 (x : UInt64) : UInt64 := x &&& 0xFFFFFFFF
+@[simp] def mask32 (x : UInt64) : UInt64 := x &&& Width.W32.toMask
 
 /-- Write to low 8 bits, preserving upper 56. -/
 @[inline] def write8 (dst src : UInt64) : UInt64 :=
-  -- TODO: should we have a constant for mask8 so that we can do ~~~ here?
-  (dst &&& 0xFFFFFFFFFFFFFF00) ||| mask8 src
+  (dst &&& ~~~Width.W8.toMask) ||| mask8 src
 
 /-- Write to low 16 bits, preserving upper 48. -/
 @[inline] def write16 (dst src : UInt64) : UInt64 :=
-  (dst &&& 0xFFFFFFFFFFFF0000) ||| mask16 src
+  (dst &&& ~~~Width.W16.toMask) ||| mask16 src
 
 def Registers.get64 (regs: Registers) (r: BaseReg): UInt64 :=
   let ⟨ r, _ ⟩ := r
@@ -445,13 +471,10 @@ def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
   | .r12 => { regs with r12 := v } | .r13 => { regs with r13 := v }
   | .r14 => { regs with r14 := v } | .r15 => { regs with r15 := v }
 
-@[simp] def w64_is_base (r: Reg) (h: r.width = W64): r.is_base :=
+def w64_is_base (r: Reg) (h: r.width = .W64): r.is_base :=
   by
     cases r
-    <;> simp
-    <;> simp [Reg.width] at h
-    <;> sorry
-    
+    <;> simp at *
 
 /-- Set a register value with appropriate aliasing behavior:
     - 64-bit: direct write
@@ -459,8 +482,8 @@ def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
     - 16-bit: preserves upper 48 bits
     - 8-bit: preserves upper 56 bits -/
 def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
-  match r.width with
-  | .W64 => regs.set64 r.base v
+  match h: r.width with
+  | .W64 => regs.set64 ⟨ r, w64_is_base r h ⟩ v
   | .W32 => regs.set64 r.base (mask32 v)
   | .W16 => regs.set64 r.base (write16 (regs.get64 r.base) v)
   | .W8 => regs.set64 r.base (write8 (regs.get64 r.base) v)
@@ -471,17 +494,19 @@ def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
 def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
 
-def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (ret: Word → α): α :=
+def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (width: Width) (ret: Word → α): α :=
   if addr % 8 != 0 then
     throw (s!"Out-of-bounds access (rip={repr s.rip})")
   else
     match s.heap[addr]? with
-    | .some v => ret v
+    | .some v => ret (v &&& width.toMask) -- little-endian
     | .none => throw (s!"Memory read but not written to (rip={repr s.rip}, addr={repr addr})")
 
-def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : Word) (ret: MachineState → α) : α :=
+def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (w: Width) (val : Word) (ret: MachineState → α) : α :=
   if addr % 8 != 0 then
     throw s!"Out-of-bounds access (rip={repr s.rip})"
+  else if w != .W64 then
+    throw s!"TODO: figure out what we do here"
   else
     ret { s with heap := s.heap.insert addr val }
 
@@ -496,6 +521,9 @@ def UInt64.toIntWithWidth (self: UInt64) (w: Width): Int :=
   | .W16 => (mask16 self).toNat.toInt16.toInt
   | .W8 => (mask8 self).toNat.toInt8.toInt
 
+def Int.clamp (self: Int) (w: Width): Int :=
+  (UInt64.ofInt self).toIntWithWidth w
+
 -- Convert Int64 immediate to UInt64 (implicit sign extension if the constant
 -- was of a smaller width in the source ASM file)
 @[simp] def eval_imm (v : Int64) : UInt64 := v.toUInt64
@@ -503,7 +531,7 @@ def UInt64.toIntWithWidth (self: UInt64) (w: Width): Int :=
 -- Compute effective address: base + idx*scale + disp
 def effective_addr [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
   match o with
-  | .mem base idx scale disp =>
+  | .mem _ base idx scale disp =>
     let idxVal := match idx with | .some r => s.getReg r | .none => 0
     ret ((s.getReg base) + idxVal * scale.toUInt64 + UInt64.ofInt disp)
   | _ => throw "effective_addr called on non-memory operand"
@@ -512,20 +540,26 @@ def eval_operand [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α
   match o with
   | .reg r => ret (s.getReg r)
   | .imm v => ret (eval_imm v)
-  | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
+  | .mem w _ _ _ _ => effective_addr s o (fun addr => s.readMem addr w ret)
 
-def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
+def eval_typed_operand [Throw α] (s: MachineState) (o: TypedOperand) (ret: UInt64 → Width → α): α :=
   match o with
-  | .reg r => ret (s.getReg r)
-  | .mem _ _ _ _ => effective_addr s o (fun addr => s.readMem addr ret)
+  | .typed (.imm v) w => ret (eval_imm v) w
+  | .typed (.reg r) () => ret (s.getReg r) r.width
+  | .typed (.mem w base idx scale disp) () => effective_addr s (.mem w base idx scale disp) (fun addr => s.readMem addr w (fun v => ret v w))
+
+def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → Width → α): α :=
+  match o with
+  | .reg r => ret (s.getReg r) r.width
+  | .mem w _ _ _ _ => effective_addr s o (fun addr => s.readMem addr w (fun v => ret v w))
   | .imm _ => throw "Ill-formed instruction (rip={repr s.rip})"
 
 def set_reg_or_mem [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineState → α): α :=
   match o with
   | .reg r =>
       ret (s.setReg r v)
-  | .mem _ _ _ _ =>
-      effective_addr s o (fun addr => s.writeMem addr v ret)
+  | .mem w _ _ _ _ =>
+      effective_addr s o (fun addr => s.writeMem addr w v ret)
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
@@ -533,54 +567,54 @@ def set_reg [Throw α] (s: MachineState) (o: Operand) (v: Word) (ret: MachineSta
   match o with
   | .reg r =>
       ret (s.setReg r v)
-  | .mem _ _ _ _
+  | .mem _ _ _ _ _
   | .imm _ =>
       throw "Ill-formed instruction (rip={repr s.rip})"
 
-
 def next (s: MachineState): MachineState := { s with rip := s.rip + 1 }
 
--- Signed overflow detection for addition with carry: compare unbounded Int sum to truncated Int64 result
+-- Signed overflow detection for addition with carry: compare unbounded Int sum to truncated IntXX result
 -- Overflow occurs iff the unbounded sum differs from the signed interpretation of the truncated result
 -- Per Intel SDM, OF reflects the full operation including carry-in
-def add_overflow_with_carry (a b : UInt64) (carry_in : Nat) : Bool :=
-  let unbounded := a.toInt64.toInt + b.toInt64.toInt + carry_in
-  let result := UInt64.ofNat (a.toNat + b.toNat + carry_in)
-  let truncated := result.toInt64.toInt
+def add_overflow_with_carry (w: Width) (a b : UInt64) (carry_in : Nat) : Bool :=
+  let unbounded := a.toIntWithWidth w + b.toIntWithWidth w + carry_in
+  let truncated := unbounded.clamp w
   unbounded != truncated
 
 -- Addition with carry: dst + src + carry_in
 -- Returns (result, zf, cf, of)
-def add_with_carry (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
+def add_with_carry (w: Width) (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
   let unbounded := dst.toNat + src.toNat + carry_in
   let result64 := UInt64.ofNat unbounded
   let zf := result64 == 0
-  let cf := unbounded >= 2^64  -- Carry if result doesn't fit in 64 bits
-  let of := add_overflow_with_carry dst src carry_in
+  let cf := unbounded >= 2^w.toNat  -- Carry if result doesn't fit in 64 bits
+  let of := add_overflow_with_carry w dst src carry_in
   (result64, zf, cf, of)
 
 -- Signed overflow detection for subtraction with borrow: compare unbounded Int diff to truncated Int64 result
 -- Per Intel SDM, OF reflects the full operation including borrow-in
-def sub_overflow_with_borrow (a b : UInt64) (borrow_in : Nat) : Bool :=
-  let unbounded := a.toInt64.toInt - b.toInt64.toInt - borrow_in
-  let result := UInt64.ofInt (a.toNat - b.toNat - borrow_in)
-  let truncated := result.toInt64.toInt
+def sub_overflow_with_borrow (w: Width) (a b : UInt64) (borrow_in : Nat) : Bool :=
+  let unbounded := a.toIntWithWidth w - b.toIntWithWidth w - borrow_in
+  let truncated := unbounded.clamp w
   unbounded != truncated
 
 -- Subtraction with borrow: dst - src - carry_in
 -- Returns (result, zf, cf, of)
-def sub_with_borrow (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
+def sub_with_borrow (w: Width) (dst src : UInt64) (carry_in : Nat) : UInt64 × Bool × Bool × Bool :=
   -- Use Int to handle negative results correctly (Nat subtraction saturates to 0)
   let unbounded : Int := dst.toNat - src.toNat - carry_in
   let result64 := UInt64.ofInt unbounded
   let zf := result64 == 0
-  let cf := src.toNat + carry_in > dst.toNat  -- Borrow if src+carry > dst (unsigned)
-  let of := sub_overflow_with_borrow dst src carry_in
+  -- CF set if overflow in unsigned, i.e.
+  -- dst - src - carry_in < 0, which we rewrite to the form below (because Nat
+  -- saturates down to 0)
+  let cf := src.toNat + carry_in > dst.toNat
+  let of := sub_overflow_with_borrow w dst src carry_in
   (result64, zf, cf, of)
 
 -- Backward-compatible aliases (used in step_one tactic simp set and CMP instruction)
-def add_overflow (a b : UInt64) : Bool := add_overflow_with_carry a b 0
-def sub_overflow (a b : UInt64) : Bool := sub_overflow_with_borrow a b 0
+def add_overflow (w: Width) (a b : UInt64) : Bool := add_overflow_with_carry w a b 0
+def sub_overflow (w: Width) (a b : UInt64) : Bool := sub_overflow_with_borrow w a b 0
 
 -- This function intentionally does not increase the pc, callers will increase
 -- it (always by 1).
@@ -589,133 +623,136 @@ def sub_overflow (a b : UInt64) : Bool := sub_overflow_with_borrow a b 0
 def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): α :=
   match i with
   | .mov dst src =>
-      -- 64-bit move (movq/movabs): direct copy of evaluated value
-      -- For immediates, Int64.toUInt64 already gives the correct 64-bit value
+      -- If we leave aside segment-related operations, MOV is homogenous (i.e.
+      -- src and dst have the same width). The only case that performs
+      -- sign-extension is when dst = 64-bit register, and src = 32-bit
+      -- immediate, in which case eval_operand takes care of sign-extending
+      -- naturally.
       eval_operand s src (fun val =>
       set_reg_or_mem s dst val ret)
 
-  | .movl dst src =>
-      -- 32-bit move: ZERO-extends to 64-bit (clears upper 32 bits)
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (zero_extend_32_to_64 val) ret)
+  | .movzx dst src =>
+      -- Here, zero-extension is given to us naturally by the fact that `val`
+      -- is a UInt64.
+      eval_reg_or_mem s src (fun val _ =>
+      set_reg_or_mem s dst val ret)
 
   | .add dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let (result64, zf, cf, of) := add_with_carry dst_v src_v 0
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let (result64, zf, cf, of) := add_with_carry w dst_v src_v 0
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { zf, of, cf }})))
 
   | .adc dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let (result64, zf, cf, of) := add_with_carry dst_v src_v s.flags.cf.toNat
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let (result64, zf, cf, of) := add_with_carry w dst_v src_v s.flags.cf.toNat
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { zf, of, cf }})))
 
   | .adcx dst src =>
-      -- Some thoughts: I basically try to assert the well-formedness of
-      -- instructions (by asserting that e.g. immediate operands are not
-      -- allowed, or that the x64 semantics demand that the destination of adcx
-      -- be a general-purpose register... so that it at least simplifies the
-      -- reasoning, but realistically, since we intend to consume source
-      -- assembly (possibly with an actual frontend to parse .S syntax), the
-      -- assembler will enforce eventually that no such nonsensical instructions
-      -- exist. Is it worth the trouble?
-      eval_reg_or_mem s src (fun src_v  =>
-      eval_reg_or_mem s dst (fun dst_v  =>
+      -- Relying on ASM syntax here to enforce that w == _w
+      eval_reg_or_mem s src (fun src_v w =>
+      eval_reg_or_mem s dst (fun dst_v _w =>
       let result := src_v.toNat + dst_v.toNat + s.flags.cf.toNat
-      let carry := result >>> 64
+      let carry := result >>> w.toNat
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with cf := carry != 0 }}
       set_reg s dst result ret))
 
   | .adox dst src =>
-      eval_reg_or_mem s src (fun src_v  =>
-      eval_reg_or_mem s dst (fun dst_v  =>
+      eval_reg_or_mem s src (fun src_v w =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
       -- TODO: figure out how to make sure that this let-binding does not get
       -- inlined, *unless* the right-hand side can be computed to a constant
       let result := src_v.toNat + dst_v.toNat + s.flags.of.toNat
-      let carry := result >>> 64
+      let carry := result >>> w.toNat
       let result := UInt64.ofNat result
       let s := { s with flags := { s.flags with of := carry != 0 }}
       set_reg s dst result ret))
 
   | .sub dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let (result64, zf, cf, of) := sub_with_borrow dst_v src_v 0
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let (result64, zf, cf, of) := sub_with_borrow w dst_v src_v 0
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { zf, of, cf }})))
 
   | .sbb dst src =>
       -- Per Intel SDM: OF, SF, ZF, AF, PF, and CF flags are set according to the result
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let (result64, zf, cf, of) := sub_with_borrow dst_v src_v s.flags.cf.toNat
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let (result64, zf, cf, of) := sub_with_borrow w dst_v src_v s.flags.cf.toNat
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { zf, of, cf }})))
 
   | .mul src =>
-      -- mulq (64-bit only): RDX:RAX = RAX * src
-      -- Note: Other widths (mulb/mulw/mull) would need separate instruction variants
-      -- since they read from AL/AX/EAX and write to AX/DX:AX/EDX:EAX respectively.
-      -- The parser validates that operands are 64-bit. See: https://www.felixcloutier.com/x86/mul
-      eval_reg_or_mem s src (fun src_v =>
-      let rax_v := s.getReg .rax
+      eval_reg_or_mem s src (fun src_v w =>
+      let rax_v := s.getReg (Reg.shrink .rax w)
       let result := rax_v.toNat * src_v.toNat
-      let lo := UInt64.ofNat result
-      let hi := UInt64.ofNat (result >>> 64)
-      let s := s.setReg .rax lo
-      let s := s.setReg .rdx hi
-      -- mul sets OF and CF if high half is non-zero
-      let cf := hi != 0
-      let of := hi != 0
-      ret { s with flags := { s.flags with cf, of }})
+      if w != .W8 then
+        let lo := (UInt64.ofNat result) &&& w.toMask
+        let hi := UInt64.ofNat (result >>> w.toNat)
+        let r_lo := Reg.shrink .rax w
+        let r_hi := Reg.shrink .rdx w
+        let s := s.setReg r_lo lo
+        let s := s.setReg r_hi hi
+        -- mul sets OF and CF if high half is non-zero
+        let cf := hi != 0
+        let of := hi != 0
+        ret { s with flags := { s.flags with cf, of }}
+      else
+        let cf := result &&& 0xFF00 != 0
+        let of := result &&& 0xFF00 != 0
+        let s := s.setReg .ax (UInt64.ofNat result)
+        ret { s with flags := { s.flags with cf, of }}
+      )
 
-  | .mulx hi lo src1 =>
-      eval_reg_or_mem s src1 (fun src1_v  =>
-      let src2_v := s.getReg .rdx
+  | .mulx r_hi r_lo src1 =>
+      eval_reg_or_mem s src1 (fun src1_v w =>
+      let src2_v := s.getReg (Reg.shrink .rdx w)
       let result := src1_v.toNat * src2_v.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
-      set_reg s lo (UInt64.ofNat result) (fun s  =>
-      set_reg s hi (UInt64.ofNat (result >>> 64)) ret))
+      set_reg s (r_lo.shrink w) (UInt64.ofNat result) (fun s  =>
+      set_reg s (r_hi.shrink w) (UInt64.ofNat (result >>> w.toNat)) ret))
 
   | .imul dst src =>
       -- imulq (64-bit only): Two-operand form DEST := truncate(DEST × SRC) (signed)
       -- Note: Other widths (imulb/imulw/imull) would need different truncation/sign-extension.
       -- The parser validates that operands are 64-bit. See: https://www.felixcloutier.com/x86/imul
       -- OF/CF set when signed result doesn't fit in destination size
-      eval_reg_or_mem s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result := dst_v.toInt64.toInt * src_v.toInt64.toInt
+      eval_reg_or_mem s src (fun src_v w =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
+      let result := dst_v.toIntWithWidth w * src_v.toIntWithWidth w
       let result64 := UInt64.ofInt result
       -- OF/CF set if sign-extended truncated result differs from full result
-      let signExtended := result64.toInt64.toInt
-      let overflow := result != signExtended
+      let overflow := result != result.clamp w
       set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { s.flags with cf := overflow, of := overflow }})))
 
   | .neg dst =>
       -- Per Intel SDM: CF set unless operand is 0; OF set according to result
       -- OF is set when negating the most negative value (INT64_MIN)
-      eval_reg_or_mem s dst (fun dst_v =>
-      -- Two's complement negation: negate via Int64 to ensure correct wrapping
-      let result := (-(dst_v.toInt64)).toUInt64
+      eval_reg_or_mem s dst (fun dst_v w =>
+      -- Two's complement negation: negate via IntXX to ensure correct wrapping
+      let result := UInt64.ofInt (-(dst_v.toIntWithWidth w))
       let zf := result == 0
       let cf := dst_v != 0  -- CF is set unless operand is 0
-      let of := dst_v == 0x8000000000000000  -- OF set when negating INT64_MIN
+      let of := dst_v == result &&& w.toMask -- OF set when negating INT64_MIN, i.e. when - is ineffective
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with zf, cf, of }}))
 
   | .dec dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result := dst_v - 1
+      eval_reg_or_mem s dst (fun dst_v w =>
+      -- DEC wraparounds, presumably like SUB
+      let result := dst_v.toIntWithWidth w - 1
+      let result64 := UInt64.ofInt result
       let zf := result == 0
       -- Signed overflow occurs when decrementing INT64_MIN (produces positive result)
-      let of := dst_v == 0x8000000000000000
+      let of := sub_overflow w dst_v 1
       -- dec does NOT affect CF
-      set_reg_or_mem s dst result (fun s =>
+      set_reg_or_mem s dst result64 (fun s =>
       ret { s with flags := { s.flags with zf, of }}))
 
   | .lea dst src =>
@@ -724,7 +761,7 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
 
   | .xor dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
       let result := dst_v ^^^ src_v
       let zf := result == 0
       -- xor clears CF and OF
@@ -733,7 +770,7 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
 
   | .and dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
       let result := dst_v &&& src_v
       let zf := result == 0
       set_reg_or_mem s dst result (fun s =>
@@ -741,99 +778,17 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
 
   | .or dst src =>
       eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
       let result := dst_v ||| src_v
       let zf := result == 0
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { zf, of := false, cf := false }})))
 
   | .cmp a b =>
-      eval_reg_or_mem s a (fun a_v =>
+      eval_reg_or_mem s a (fun a_v w =>
       eval_operand s b (fun b_v =>
-      let res := (Int.ofNat a_v.toNat) - (Int.ofNat b_v.toNat)
-      let cf := res < 0
-      let zf := res == 0
-      let of := sub_overflow a_v b_v
+      let (_, zf, cf, of) := sub_with_borrow w a_v b_v 0
       ret { s with flags := { zf, of, cf }}))
-
-  -- ============================================================================
-  -- 32-bit arithmetic operations (zero-extend results to 64-bit)
-  -- ============================================================================
-
-  | .addl dst src =>
-      eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let src32 := mask32 src_v
-      let dst32 := mask32 dst_v
-      let result := dst32.toNat + src32.toNat
-      let result32 := UInt64.ofNat (result % (2^32))
-      let zf := result32 == 0
-      let cf := result >= 2^32
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, cf, of := false }})))
-
-  | .subl dst src =>
-      eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let src32 := mask32 src_v
-      let dst32 := mask32 dst_v
-      let result := (dst32.toNat : Int) - (src32.toNat : Int)
-      let result32 := UInt64.ofNat ((result.toNat) % (2^32))
-      let zf := result32 == 0
-      let cf := result < 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, cf, of := false }})))
-
-  | .negl dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let dst32 := mask32 dst_v
-      let result32 := UInt64.ofNat ((2^32 - dst32.toNat) % (2^32))
-      let zf := result32 == 0
-      let cf := dst32 != 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, cf, of := false }}))
-
-  | .notl dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result32 := mask32 (~~~dst_v)
-      set_reg_or_mem s dst result32 ret)
-
-  | .decl dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let dst32 := mask32 dst_v
-      let result32 := UInt64.ofNat ((dst32.toNat + 2^32 - 1) % (2^32))
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { s.flags with zf }}))
-
-  -- ============================================================================
-  -- Move/Load variants
-  -- ============================================================================
-
-  | .movw dst src =>
-      -- 16-bit move, preserves upper bits (handled by Registers.set for 16-bit regs)
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (mask16 val) ret)
-
-  | .movzbl dst src =>
-      -- Zero-extend byte to 32-bit (then to 64-bit per x86-64 convention)
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (mask8 val) ret)
-
-  | .movzwl dst src =>
-      -- Zero-extend word to 32-bit (then to 64-bit)
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (mask16 val) ret)
-
-  | .movzbq dst src =>
-      -- Zero-extend byte to 64-bit
-      eval_operand s src (fun val =>
-      set_reg_or_mem s dst (mask8 val) ret)
-
-  | .leal dst src =>
-      -- 32-bit lea, zero-extends result
-      effective_addr s src (fun addr =>
-      ret (s.setReg dst (mask32 addr)))
 
   -- ============================================================================
   -- Shift instructions
@@ -841,18 +796,18 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
 
   | .shl dst count =>
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64  -- x86 masks shift count
-      let result := dst_v <<< cnt_masked.toUInt64
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let result := dst_v <<< (cnt &&& w.toShiftMask)
       let zf := result == 0
+      -- BUG: define CF, OF for all shift operations
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with zf }})))
 
   | .shr dst count =>
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
-      let result := dst_v >>> cnt_masked.toUInt64
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let cnt_masked := cnt &&& w.toShiftMask
+      let result := dst_v >>> cnt_masked
       let zf := result == 0
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with zf }})))
@@ -860,49 +815,31 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
   | .sar dst count =>
       -- Arithmetic right shift (sign-extending)
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
-      let result := UInt64.ofInt (dst_v.toInt64.toInt >>> cnt_masked)
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let cnt_masked := cnt &&& w.toShiftMask
+      let result := (dst_v.toIntWithWidth w >>> cnt_masked.toNat).clamp w
       let zf := result == 0
-      set_reg_or_mem s dst result (fun s =>
-      ret { s with flags := { s.flags with zf }})))
-
-  | .shll dst count =>
-      eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 32
-      let result32 := mask32 (dst_v <<< cnt_masked.toUInt64)
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { s.flags with zf }})))
-
-  | .shrl dst count =>
-      eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 32
-      let result32 := mask32 (mask32 dst_v >>> cnt_masked.toUInt64)
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
+      set_reg_or_mem s dst (UInt64.ofInt result) (fun s =>
       ret { s with flags := { s.flags with zf }})))
 
   | .shld dst src count =>
       -- Double-precision shift left: shift dst left by count, fill low bits from src high bits
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
+      eval_reg_or_mem s src (fun src_v w =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
+      let cnt_masked := cnt &&& w.toShiftMask
       let result := if cnt_masked == 0 then dst_v
-                    else (dst_v <<< cnt_masked.toUInt64) ||| (src_v >>> (64 - cnt_masked).toUInt64)
+                    else (dst_v <<< cnt_masked) ||| (src_v >>> (w.toUInt64 - cnt_masked))
       set_reg_or_mem s dst result ret)))
 
   | .shrd dst src count =>
       -- Double-precision shift right: shift dst right by count, fill high bits from src low bits
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
+      eval_reg_or_mem s src (fun src_v w =>
+      eval_reg_or_mem s dst (fun dst_v _ =>
+      let cnt_masked := cnt &&& w.toShiftMask
       let result := if cnt_masked == 0 then dst_v
-                    else (dst_v >>> cnt_masked.toUInt64) ||| (src_v <<< (64 - cnt_masked).toUInt64)
+                    else (dst_v >>> cnt_masked) ||| (src_v <<< (w.toUInt64 - cnt_masked))
       set_reg_or_mem s dst result ret)))
 
   -- ============================================================================
@@ -910,126 +847,65 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
   -- ============================================================================
 
   | .rol dst count =>
+      -- BUG: CF should be an input, flags are incorrectly set.
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
-      let result := (dst_v <<< cnt_masked.toUInt64) ||| (dst_v >>> (64 - cnt_masked).toUInt64)
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let cnt_masked := cnt &&& w.toShiftMask
+      let result := (dst_v <<< cnt_masked) ||| (dst_v >>> (w.toUInt64 - cnt_masked))
       -- Per Intel SDM: CF = bit 0 of result (the bit that rotated from MSB to LSB)
       let cf := (result &&& 1) != 0
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with cf }})))
 
   | .ror dst count =>
+      -- BUG: same as above
       eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let cnt_masked := cnt.toNat % 64
-      let result := (dst_v >>> cnt_masked.toUInt64) ||| (dst_v <<< (64 - cnt_masked).toUInt64)
+      eval_reg_or_mem s dst (fun dst_v w =>
+      let cnt_masked := cnt &&& w.toShiftMask
+      let result := (dst_v >>> cnt_masked) ||| (dst_v <<< (w.toUInt64 - cnt_masked))
       -- Per Intel SDM: CF = MSB of result (the bit that rotated from LSB to MSB)
-      let cf := (result >>> 63) != 0
+      let cf := (result >>> (w.toUInt64 - 1)) != 0
       set_reg_or_mem s dst result (fun s =>
       ret { s with flags := { s.flags with cf }})))
-
-  | .roll dst count =>
-      eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let dst32 := mask32 dst_v
-      let cnt_masked := cnt.toNat % 32
-      let result32 := mask32 ((dst32 <<< cnt_masked.toUInt64) ||| (dst32 >>> (32 - cnt_masked).toUInt64))
-      set_reg_or_mem s dst result32 ret))
-
-  | .rorl dst count =>
-      eval_operand s count (fun cnt =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let dst32 := mask32 dst_v
-      let cnt_masked := cnt.toNat % 32
-      let result32 := mask32 ((dst32 >>> cnt_masked.toUInt64) ||| (dst32 <<< (32 - cnt_masked).toUInt64))
-      set_reg_or_mem s dst result32 ret))
 
   -- ============================================================================
   -- Byte swap
   -- ============================================================================
 
   | .bswap dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let b0 := (dst_v >>> 0)  &&& 0xFF
-      let b1 := (dst_v >>> 8)  &&& 0xFF
-      let b2 := (dst_v >>> 16) &&& 0xFF
-      let b3 := (dst_v >>> 24) &&& 0xFF
-      let b4 := (dst_v >>> 32) &&& 0xFF
-      let b5 := (dst_v >>> 40) &&& 0xFF
-      let b6 := (dst_v >>> 48) &&& 0xFF
-      let b7 := (dst_v >>> 56) &&& 0xFF
-      let result := (b0 <<< 56) ||| (b1 <<< 48) ||| (b2 <<< 40) ||| (b3 <<< 32) |||
-                    (b4 <<< 24) ||| (b5 <<< 16) ||| (b6 <<< 8) ||| b7
-      set_reg_or_mem s dst result ret)
-
-  | .bswapl dst =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let b0 := (dst_v >>> 0)  &&& 0xFF
-      let b1 := (dst_v >>> 8)  &&& 0xFF
-      let b2 := (dst_v >>> 16) &&& 0xFF
-      let b3 := (dst_v >>> 24) &&& 0xFF
-      let result32 := (b0 <<< 24) ||| (b1 <<< 16) ||| (b2 <<< 8) ||| b3
-      set_reg_or_mem s dst result32 ret)
-
-  -- ============================================================================
-  -- 32-bit bitwise operations
-  -- ============================================================================
-
-  | .xorl dst src =>
-      eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result32 := mask32 (dst_v ^^^ src_v)
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, of := false, cf := false }})))
-
-  | .andl dst src =>
-      eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result32 := mask32 (dst_v &&& src_v)
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, of := false, cf := false }})))
-
-  | .orl dst src =>
-      eval_operand s src (fun src_v =>
-      eval_reg_or_mem s dst (fun dst_v =>
-      let result32 := mask32 (dst_v ||| src_v)
-      let zf := result32 == 0
-      set_reg_or_mem s dst result32 (fun s =>
-      ret { s with flags := { zf, of := false, cf := false }})))
+      eval_reg_or_mem s dst (fun dst_v w =>
+      match w with
+      | .W64 =>
+        let b0 := (dst_v >>> 0)  &&& 0xFF
+        let b1 := (dst_v >>> 8)  &&& 0xFF
+        let b2 := (dst_v >>> 16) &&& 0xFF
+        let b3 := (dst_v >>> 24) &&& 0xFF
+        let b4 := (dst_v >>> 32) &&& 0xFF
+        let b5 := (dst_v >>> 40) &&& 0xFF
+        let b6 := (dst_v >>> 48) &&& 0xFF
+        let b7 := (dst_v >>> 56) &&& 0xFF
+        let result := (b0 <<< 56) ||| (b1 <<< 48) ||| (b2 <<< 40) ||| (b3 <<< 32) |||
+                      (b4 <<< 24) ||| (b5 <<< 16) ||| (b6 <<< 8) ||| b7
+        set_reg_or_mem s dst result ret
+      | _ =>
+        let b0 := (dst_v >>> 0)  &&& 0xFF
+        let b1 := (dst_v >>> 8)  &&& 0xFF
+        let b2 := (dst_v >>> 16) &&& 0xFF
+        let b3 := (dst_v >>> 24) &&& 0xFF
+        let result := (b0 <<< 24) ||| (b1 <<< 18) ||| (b2 <<< 8) ||| b3
+        set_reg_or_mem s dst result ret
+      )
 
   -- ============================================================================
   -- Test and compare variants
   -- ============================================================================
 
   | .test a b =>
-      eval_reg_or_mem s a (fun a_v =>
+      eval_reg_or_mem s a (fun a_v _ =>
       eval_operand s b (fun b_v =>
       let result := a_v &&& b_v
       let zf := result == 0
       ret { s with flags := { zf, of := false, cf := false }}))
-
-  | .cmpl a b =>
-      eval_reg_or_mem s a (fun a_v =>
-      eval_operand s b (fun b_v =>
-      let a32 := mask32 a_v
-      let b32 := mask32 b_v
-      let res := (Int.ofNat a32.toNat) - (Int.ofNat b32.toNat)
-      let cf := res < 0
-      let zf := res == 0
-      ret { s with flags := { zf, cf, of := false }}))
-
-  | .cmpb a b =>
-      eval_reg_or_mem s a (fun a_v =>
-      eval_operand s b (fun b_v =>
-      let a8 := mask8 a_v
-      let b8 := mask8 b_v
-      let res := (Int.ofNat a8.toNat) - (Int.ofNat b8.toNat)
-      let cf := res < 0
-      let zf := res == 0
-      ret { s with flags := { zf, cf, of := false }}))
 
   -- ============================================================================
   -- Set byte on condition
@@ -1037,6 +913,7 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
 
   | .setc dst =>
       -- Set byte to 1 if CF=1, else 0
+      -- TODO: UInt64.ofBool?
       let val : UInt64 := if s.flags.cf then 1 else 0
       set_reg_or_mem s dst val ret
 
@@ -1066,23 +943,21 @@ def strt1 [Throw α] (s : MachineState) (i : Instr) (ret: MachineState → α): 
   -- ============================================================================
 
   | .push src =>
-      eval_operand s src (fun val =>
-      let newRsp := s.getReg .rsp - 8
+      eval_typed_operand s src (fun val w =>
+      let ofs := w.toBytes
+      let newRsp := s.getReg .rsp - ofs
       let s := s.setReg .rsp newRsp
-      s.writeMem newRsp val (fun s => ret s))
+      s.writeMem newRsp w val (fun s => ret s))
 
   | .pop dst =>
+      eval_reg_or_mem s dst (fun _ w =>
       let rsp := s.getReg .rsp
-      s.readMem rsp (fun val =>
-      let s := s.setReg .rsp (rsp + 8)
-      set_reg_or_mem s dst val ret)
+      s.readMem rsp w (fun val =>
+      let s := s.setReg .rsp (rsp + w.toBytes)
+      set_reg_or_mem s dst val ret))
 
   | .ret =>
-      -- Pop return address from stack and jump to it
-      let rsp := s.getReg .rsp
-      s.readMem rsp (fun retAddr =>
-      let s := s.setReg .rsp (rsp + 8)
-      ret { s with rip := retAddr.toNat })
+      throw "TODO: .ret"
 
   | _ => throw s!"unsupported non-control instruction {repr i}"
 
