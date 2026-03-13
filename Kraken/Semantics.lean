@@ -11,6 +11,12 @@ For tactics, see Kraken/Tactics.lean.
 import Std
 import Lean.Elab.Tactic.Grind
 
+class Throw α where
+  throw: String → α
+
+def throw {α} [inst: Throw α] :=
+  inst.throw
+
 -- ============================================================================
 -- Width Type
 -- ============================================================================
@@ -73,16 +79,120 @@ inductive Reg
   | al | bl | cl | dl | sil | dil | spl | bpl
   | r8b | r9b | r10b | r11b | r12b | r13b | r14b | r15b => .W8
 
-/-- Get the 64-bit base register for any alias. -/
-@[simp] def Reg.base : Reg → Reg
-  | rax | eax | ax | al => .rax | rbx | ebx | bx | bl => .rbx
-  | rcx | ecx | cx | cl => .rcx | rdx | edx | dx | dl => .rdx
-  | rsi | esi | si | sil => .rsi | rdi | edi | di | dil => .rdi
-  | rsp | esp | sp | spl => .rsp | rbp | ebp | bp | bpl => .rbp
-  | r8  | r8d  | r8w  | r8b  => .r8  | r9  | r9d  | r9w  | r9b  => .r9
-  | r10 | r10d | r10w | r10b => .r10 | r11 | r11d | r11w | r11b => .r11
-  | r12 | r12d | r12w | r12b => .r12 | r13 | r13d | r13w | r13b => .r13
-  | r14 | r14d | r14w | r14b => .r14 | r15 | r15d | r15w | r15b => .r15
+@[simp] def Reg.is_base : Reg → Prop
+  | rax | rbx | rcx | rdx | rsi | rdi | rsp | rbp
+  | r8  | r9  | r10 | r11 | r12 | r13 | r14 | r15 => True
+  | _ => False
+
+/-- One of the 16 base registers. We adopt a refinement here to avoid having to
+  deal with error cases and requiring [Throw α] on a lot of our specifications -/
+abbrev BaseReg := { r: Reg // r.is_base }
+
+/-- Get the 64-bit base register for any alias, along with a proof witness that
+  it is indeed one of the 16 base registers. -/
+def Reg.base : Reg → BaseReg
+  | rax | eax | ax | al => ⟨ .rax, by simp ⟩
+  | rbx | ebx | bx | bl => ⟨ .rbx, by simp ⟩
+  | rcx | ecx | cx | cl => ⟨ .rcx, by simp ⟩
+  | rdx | edx | dx | dl => ⟨ .rdx, by simp ⟩
+  | rsi | esi | si | sil => ⟨ .rsi, by simp ⟩
+  | rdi | edi | di | dil => ⟨ .rdi, by simp ⟩
+  | rsp | esp | sp | spl => ⟨ .rsp, by simp ⟩
+  | rbp | ebp | bp | bpl => ⟨ .rbp, by simp ⟩
+  | r8  | r8d  | r8w  | r8b  => ⟨ .r8, by simp ⟩
+  | r9  | r9d  | r9w  | r9b  => ⟨ .r9, by simp ⟩
+  | r10 | r10d | r10w | r10b => ⟨ .r10, by simp ⟩
+  | r11 | r11d | r11w | r11b => ⟨ .r11, by simp ⟩
+  | r12 | r12d | r12w | r12b => ⟨ .r12, by simp ⟩
+  | r13 | r13d | r13w | r13b => ⟨ .r13, by simp ⟩
+  | r14 | r14d | r14w | r14b => ⟨ .r14, by simp ⟩
+  | r15 | r15d | r15w | r15b => ⟨ .r15, by simp ⟩
+
+def Reg.shrink64 (self: BaseReg) (w: Width): Reg :=
+  let ⟨ self, _ ⟩ := self
+  match self, w with
+  | .rax, .W64 => .rax
+  | .rax, .W32 => .eax
+  | .rax, .W16 =>  .ax
+  | .rax, .W8  =>  .al
+
+  | .rbx, .W64 => .rbx
+  | .rbx, .W32 => .ebx
+  | .rbx, .W16 =>  .bx
+  | .rbx, .W8  =>  .bl
+
+  | .rcx, .W64 => .rcx
+  | .rcx, .W32 => .ecx
+  | .rcx, .W16 =>  .cx
+  | .rcx, .W8  =>  .cl
+
+  | .rdx, .W64 => .rdx
+  | .rdx, .W32 => .edx
+  | .rdx, .W16 =>  .dx
+  | .rdx, .W8  =>  .dl
+
+  | .rsi, .W64 => .rsi
+  | .rsi, .W32 => .esi
+  | .rsi, .W16 =>  .si
+  | .rsi, .W8  =>  .sil
+
+  | .rdi, .W64 => .rdi
+  | .rdi, .W32 => .edi
+  | .rdi, .W16 =>  .di
+  | .rdi, .W8  =>  .dil
+
+  | .rsp, .W64 => .rsp
+  | .rsp, .W32 => .esp
+  | .rsp, .W16 =>  .sp
+  | .rsp, .W8  =>  .spl
+
+  | .rbp, .W64 => .rbp
+  | .rbp, .W32 => .ebp
+  | .rbp, .W16 =>  .bp
+  | .rbp, .W8  =>  .bpl
+
+  | .r8, .W64 => .r8
+  | .r8, .W32 => .r8d
+  | .r8, .W16 => .r8w
+  | .r8, .W8  => .r8b
+
+  | .r9, .W64 => .r9
+  | .r9, .W32 => .r9d
+  | .r9, .W16 => .r9w
+  | .r9, .W8  => .r9b
+
+  | .r10, .W64 => .r10
+  | .r10, .W32 => .r10d
+  | .r10, .W16 => .r10w
+  | .r10, .W8  => .r10b
+
+  | .r11, .W64 => .r11
+  | .r11, .W32 => .r11d
+  | .r11, .W16 => .r11w
+  | .r11, .W8  => .r11b
+
+  | .r12, .W64 => .r12
+  | .r12, .W32 => .r12d
+  | .r12, .W16 => .r12w
+  | .r12, .W8  => .r12b
+
+  | .r13, .W64 => .r13
+  | .r13, .W32 => .r13d
+  | .r13, .W16 => .r13w
+  | .r13, .W8  => .r13b
+
+  | .r14, .W64 => .r14
+  | .r14, .W32 => .r14d
+  | .r14, .W16 => .r14w
+  | .r14, .W8  => .r14b
+
+  | .r15, .W64 => .r15
+  | .r15, .W32 => .r15d
+  | .r15, .W16 => .r15w
+  | .r15, .W8  => .r15b
+
+def Reg.shrink (self: Reg) (w: Width): Reg :=
+  Reg.shrink64 self.base w
 
 -- Register State
 -- We choose this representation rather than a `Fin 16 -> Word` to avoid
@@ -135,12 +245,30 @@ deriving Repr
 -- Operands (extended with indexed memory modes for MontMul)
 -- Memory operands use WORD offsets (multiplied by 8 in code gen) for alignment
 
+/- We generally operate under the assumption that the width of an operation can
+   be deduced from its operands, which allows us to keep a single inductive
+   constructor for many variants. For instance, `mov %eax $0` is the r/32 i/32
+   variant from https://www.felixcloutier.com/x86/mov. However, looking at `mov
+   offset(%rax, %rbx, 4) $0`, we do not know whether we intend to write a byte
+   or a 64-bit word. That is, we know that the *address size* is 64-bit [1], but
+   we are missing the operand size. For that reason, and in keeping with the
+   Intel syntax [2], we add an additional disambiguator to memory operands to
+   capture the *operand size*. In most cases, the width of the *destination*
+   operand determines which variant of the instruction we use. Some instructions
+   like `mulx` have special cases. Note that this is in spirit identical to what
+   AT&T syntax does [3], except the disambiguator is a one-letter suffix
+   appended to the instruction code. 
+  
+   [1] https://wiki.osdev.org/X86-64_Instruction_Encoding#Operand-size_and_address-size_override_prefix
+   [2] https://en.wikipedia.org/wiki/X86_assembly_language#Syntax
+   [3] https://sourceware.org/binutils/docs/as/i386_002dMnemonics.html
+-/
 inductive Operand
 | reg (r : Reg)                                          -- %rax
 -- Immediates: we use a single Int64 type since the parser already handles
 -- sign-extension from AT&T syntax. The semantic value is always 64-bit signed.
 | imm (v : Int64)                                        -- $42 (signed immediate)
-| mem (base : Reg) (idx : Option Reg := .none) (scale : Nat := 1) (disp : Int := 0)
+| mem (w: Width) (base : Reg) (idx : Option Reg := .none) (scale : Nat := 1) (disp : Int := 0)
   -- Standard x86: base + idx*scale + disp. E.g. 8(%rsp) = disp 8, (%rsi,%r15,8) = idx .r15
   -- Per Intel SDM Vol. 2A Section 2.1.5 (SIB byte), valid scale values are 1, 2, 4, 8.
   -- The default scale is 1 (SIB SS bits = 00). Scale must be explicit in AT&T syntax when != 1.
@@ -187,13 +315,8 @@ inductive Instr
 
   -- Move/Load
   | mov   (dst src : Operand)                  -- movq/movabs: 64-bit move
-  | movl  (dst src : Operand)                  -- movl: 32-bit move, zero-extends to 64-bit
-  | movw  (dst src : Operand)                  -- movw: 16-bit move, preserves upper bits
-  | movzbl (dst src : Operand)                 -- movzbl: byte to 32-bit zero-extend (then to 64)
-  | movzwl (dst src : Operand)                 -- movzwl: word to 32-bit zero-extend
-  | movzbq (dst src : Operand)                 -- movzbq: byte to 64-bit zero-extend
+  | movzx (dst src : Operand)                 -- movzbl: byte to 32-bit zero-extend (then to 64)
   | lea   (dst : Reg) (src : Operand)          -- leaq: dst = effective address
-  | leal  (dst : Reg) (src : Operand)          -- leal: 32-bit lea, zero-extends
 
   -- Shifts (64-bit)
   | shl  (dst count : Operand)                 -- shlq: logical shift left
@@ -216,25 +339,17 @@ inductive Instr
 
   -- Byte swap
   | bswap  (dst : Operand)                     -- bswapq: 64-bit byte swap
-  | bswapl (dst : Operand)                     -- bswapl: 32-bit byte swap
 
   -- Bitwise (64-bit)
   | xor  (dst src : Operand)                   -- xorq: dst ^= src, clears CF/OF, sets ZF
   | and  (dst src : Operand)                   -- andq: dst &= src, clears CF/OF, sets ZF
   | or   (dst src : Operand)                   -- orq: dst |= src, clears CF/OF, sets ZF
 
-  -- Bitwise (32-bit, zero-extend results)
-  | xorl (dst src : Operand)                   -- xorl: 32-bit XOR
-  | andl (dst src : Operand)                   -- andl: 32-bit AND
-  | orl  (dst src : Operand)                   -- orl: 32-bit OR
-
   -- Test (AND but discard result, set flags)
   | test (a b : Operand)                       -- testq: a AND b, set flags
 
   -- Compare (sets flags only)
   | cmp  (a b : Operand)                       -- cmpq: compute a - b, set flags
-  | cmpl (a b : Operand)                       -- cmpl: 32-bit compare
-  | cmpb (a b : Operand)                       -- cmpb: byte compare
 
   -- Stack operations
   | push (src : Operand)                       -- pushq: RSP -= 8, [RSP] = src
@@ -287,77 +402,38 @@ def Instr.is_ctrl
 
 /-- Write to low 8 bits, preserving upper 56. -/
 @[inline] def write8 (dst src : UInt64) : UInt64 :=
+  -- TODO: should we have a constant for mask8 so that we can do ~~~ here?
   (dst &&& 0xFFFFFFFFFFFFFF00) ||| mask8 src
 
 /-- Write to low 16 bits, preserving upper 48. -/
 @[inline] def write16 (dst src : UInt64) : UInt64 :=
   (dst &&& 0xFFFFFFFFFFFF0000) ||| mask16 src
 
-/-- Get the raw 64-bit value for a base register (internal use). -/
-@[simp] def Registers.getRaw (regs : Registers) (r : Reg) : UInt64 :=
-  match r.base with
+def Registers.get64 (regs: Registers) (r: BaseReg): UInt64 :=
+  let ⟨ r, _ ⟩ := r
+  match r with
   | .rax => regs.rax | .rbx => regs.rbx | .rcx => regs.rcx | .rdx => regs.rdx
   | .rsi => regs.rsi | .rdi => regs.rdi | .rsp => regs.rsp | .rbp => regs.rbp
   | .r8  => regs.r8  | .r9  => regs.r9  | .r10 => regs.r10 | .r11 => regs.r11
   | .r12 => regs.r12 | .r13 => regs.r13 | .r14 => regs.r14 | .r15 => regs.r15
-  | _ => 0  -- Unreachable for base registers
-
-/-- Set the raw 64-bit value for a base register (internal use). -/
-@[simp] def Registers.setRaw (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
-  match r.base with
-  | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
-  | .rcx => { regs with rcx := v } | .rdx => { regs with rdx := v }
-  | .rsi => { regs with rsi := v } | .rdi => { regs with rdi := v }
-  | .rsp => { regs with rsp := v } | .rbp => { regs with rbp := v }
-  | .r8  => { regs with r8  := v } | .r9  => { regs with r9  := v }
-  | .r10 => { regs with r10 := v } | .r11 => { regs with r11 := v }
-  | .r12 => { regs with r12 := v } | .r13 => { regs with r13 := v }
-  | .r14 => { regs with r14 := v } | .r15 => { regs with r15 := v }
-  | _ => regs  -- Unreachable for base registers
 
 /-- Get a register value with appropriate masking for aliased registers.
     Returns the value as seen through the register's width. -/
 def Registers.get (regs : Registers) (r : Reg) : UInt64 :=
-  match r with
+  let v := regs.get64 r.base
+  match r.width with
   -- 64-bit registers: direct read
-  | .rax => regs.rax | .rbx => regs.rbx | .rcx => regs.rcx | .rdx => regs.rdx
-  | .rsi => regs.rsi | .rdi => regs.rdi | .rsp => regs.rsp | .rbp => regs.rbp
-  | .r8  => regs.r8  | .r9  => regs.r9  | .r10 => regs.r10 | .r11 => regs.r11
-  | .r12 => regs.r12 | .r13 => regs.r13 | .r14 => regs.r14 | .r15 => regs.r15
+  | .W64 => v
   -- 32-bit: mask to 32 bits
-  | .eax => mask32 regs.rax | .ebx => mask32 regs.rbx
-  | .ecx => mask32 regs.rcx | .edx => mask32 regs.rdx
-  | .esi => mask32 regs.rsi | .edi => mask32 regs.rdi
-  | .esp => mask32 regs.rsp | .ebp => mask32 regs.rbp
-  | .r8d  => mask32 regs.r8  | .r9d  => mask32 regs.r9
-  | .r10d => mask32 regs.r10 | .r11d => mask32 regs.r11
-  | .r12d => mask32 regs.r12 | .r13d => mask32 regs.r13
-  | .r14d => mask32 regs.r14 | .r15d => mask32 regs.r15
+  | .W32 => mask32 v
   -- 16-bit: mask to 16 bits
-  | .ax => mask16 regs.rax | .bx => mask16 regs.rbx
-  | .cx => mask16 regs.rcx | .dx => mask16 regs.rdx
-  | .si => mask16 regs.rsi | .di => mask16 regs.rdi
-  | .sp => mask16 regs.rsp | .bp => mask16 regs.rbp
-  | .r8w  => mask16 regs.r8  | .r9w  => mask16 regs.r9
-  | .r10w => mask16 regs.r10 | .r11w => mask16 regs.r11
-  | .r12w => mask16 regs.r12 | .r13w => mask16 regs.r13
-  | .r14w => mask16 regs.r14 | .r15w => mask16 regs.r15
+  | .W16 => mask16 v
   -- 8-bit: mask to 8 bits
-  | .al => mask8 regs.rax | .bl => mask8 regs.rbx
-  | .cl => mask8 regs.rcx | .dl => mask8 regs.rdx
-  | .sil => mask8 regs.rsi | .dil => mask8 regs.rdi
-  | .spl => mask8 regs.rsp | .bpl => mask8 regs.rbp
-  | .r8b  => mask8 regs.r8  | .r9b  => mask8 regs.r9
-  | .r10b => mask8 regs.r10 | .r11b => mask8 regs.r11
-  | .r12b => mask8 regs.r12 | .r13b => mask8 regs.r13
-  | .r14b => mask8 regs.r14 | .r15b => mask8 regs.r15
+  | .W8 => mask8 v
 
-/-- Set a register value with appropriate aliasing behavior:
-    - 64-bit: direct write
-    - 32-bit: zero-extends to 64-bit (clears upper 32 bits) per Intel SDM
-    - 16-bit: preserves upper 48 bits
-    - 8-bit: preserves upper 56 bits -/
-def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
+def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
+    Registers :=
+  let ⟨ r, _ ⟩ := r
   match r with
   -- 64-bit registers: direct write
   | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
@@ -368,45 +444,32 @@ def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
   | .r10 => { regs with r10 := v } | .r11 => { regs with r11 := v }
   | .r12 => { regs with r12 := v } | .r13 => { regs with r13 := v }
   | .r14 => { regs with r14 := v } | .r15 => { regs with r15 := v }
-  -- 32-bit: zero-extend
-  | .eax => { regs with rax := mask32 v } | .ebx => { regs with rbx := mask32 v }
-  | .ecx => { regs with rcx := mask32 v } | .edx => { regs with rdx := mask32 v }
-  | .esi => { regs with rsi := mask32 v } | .edi => { regs with rdi := mask32 v }
-  | .esp => { regs with rsp := mask32 v } | .ebp => { regs with rbp := mask32 v }
-  | .r8d  => { regs with r8  := mask32 v } | .r9d  => { regs with r9  := mask32 v }
-  | .r10d => { regs with r10 := mask32 v } | .r11d => { regs with r11 := mask32 v }
-  | .r12d => { regs with r12 := mask32 v } | .r13d => { regs with r13 := mask32 v }
-  | .r14d => { regs with r14 := mask32 v } | .r15d => { regs with r15 := mask32 v }
-  -- 16-bit: preserve upper bits
-  | .ax => { regs with rax := write16 regs.rax v } | .bx => { regs with rbx := write16 regs.rbx v }
-  | .cx => { regs with rcx := write16 regs.rcx v } | .dx => { regs with rdx := write16 regs.rdx v }
-  | .si => { regs with rsi := write16 regs.rsi v } | .di => { regs with rdi := write16 regs.rdi v }
-  | .sp => { regs with rsp := write16 regs.rsp v } | .bp => { regs with rbp := write16 regs.rbp v }
-  | .r8w  => { regs with r8  := write16 regs.r8 v }  | .r9w  => { regs with r9  := write16 regs.r9 v }
-  | .r10w => { regs with r10 := write16 regs.r10 v } | .r11w => { regs with r11 := write16 regs.r11 v }
-  | .r12w => { regs with r12 := write16 regs.r12 v } | .r13w => { regs with r13 := write16 regs.r13 v }
-  | .r14w => { regs with r14 := write16 regs.r14 v } | .r15w => { regs with r15 := write16 regs.r15 v }
-  -- 8-bit: preserve upper bits
-  | .al => { regs with rax := write8 regs.rax v } | .bl => { regs with rbx := write8 regs.rbx v }
-  | .cl => { regs with rcx := write8 regs.rcx v } | .dl => { regs with rdx := write8 regs.rdx v }
-  | .sil => { regs with rsi := write8 regs.rsi v } | .dil => { regs with rdi := write8 regs.rdi v }
-  | .spl => { regs with rsp := write8 regs.rsp v } | .bpl => { regs with rbp := write8 regs.rbp v }
-  | .r8b  => { regs with r8  := write8 regs.r8 v }  | .r9b  => { regs with r9  := write8 regs.r9 v }
-  | .r10b => { regs with r10 := write8 regs.r10 v } | .r11b => { regs with r11 := write8 regs.r11 v }
-  | .r12b => { regs with r12 := write8 regs.r12 v } | .r13b => { regs with r13 := write8 regs.r13 v }
-  | .r14b => { regs with r14 := write8 regs.r14 v } | .r15b => { regs with r15 := write8 regs.r15 v }
+
+@[simp] def w64_is_base (r: Reg) (h: r.width = W64): r.is_base :=
+  by
+    cases r
+    <;> simp
+    <;> simp [Reg.width] at h
+    <;> sorry
+    
+
+/-- Set a register value with appropriate aliasing behavior:
+    - 64-bit: direct write
+    - 32-bit: zero-extends to 64-bit (clears upper 32 bits) per Intel SDM
+    - 16-bit: preserves upper 48 bits
+    - 8-bit: preserves upper 56 bits -/
+def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
+  match r.width with
+  | .W64 => regs.set64 r.base v
+  | .W32 => regs.set64 r.base (mask32 v)
+  | .W16 => regs.set64 r.base (write16 (regs.get64 r.base) v)
+  | .W8 => regs.set64 r.base (write8 (regs.get64 r.base) v)
 
 def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
   s.regs.get r
 
 def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
-
-class Throw α where
-  throw: String → α
-
-def throw [inst: Throw α] :=
-  inst.throw
 
 def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (ret: Word → α): α :=
   if addr % 8 != 0 then
@@ -422,46 +485,20 @@ def MachineState.writeMem [Throw α] (s : MachineState) (addr : Address) (val : 
   else
     ret { s with heap := s.heap.insert addr val }
 
--- Sign-extension helpers: use standard integer type conversions
--- Strategy: truncate to input size → signed Int conversion → convert to UInt64
--- This avoids branching on sign bit and is more proof-friendly.
+-- We only track values held in the widest registers -- these are 64-bit, without any particular
+-- intepretation, i.e., UInt64. However, for the computation of e.g. the overflow flag, one has to
+-- intepret the value held in a potentially smaller register **as a signed integer**.
+def UInt64.toIntWithWidth (self: UInt64) (w: Width): Int :=
+  -- TODO: is there a more direct way of doing this?
+  match w with
+  | .W64 => self.toInt64.toInt
+  | .W32 => (mask32 self).toNat.toInt32.toInt
+  | .W16 => (mask16 self).toNat.toInt16.toInt
+  | .W8 => (mask8 self).toNat.toInt8.toInt
 
--- 8-bit sign extension: UInt64 → UInt8 → Int8 → Int → UInt64
-@[simp] def sign_extend_8_to_64 (v : UInt64) : UInt64 :=
-  let truncated : UInt8 := v.toUInt8
-  let signed : Int := truncated.toInt8.toInt
-  UInt64.ofInt signed
-
--- 16-bit sign extension: UInt64 → UInt16 → Int16 → Int → UInt64
-@[simp] def sign_extend_16_to_64 (v : UInt64) : UInt64 :=
-  let truncated : UInt16 := v.toUInt16
-  let signed : Int := truncated.toInt16.toInt
-  UInt64.ofInt signed
-
--- 32-bit sign extension: UInt64 → UInt32 → Int32 → Int → UInt64
-@[simp] def sign_extend_32_to_64 (v : UInt64) : UInt64 :=
-  let truncated : UInt32 := v.toUInt32
-  let signed : Int := truncated.toInt32.toInt
-  UInt64.ofInt signed
-
--- Zero-extension helpers: truncate to input size, then widen (unsigned)
--- Upper bits are implicitly zero when converting smaller unsigned to larger
-
-@[simp] def zero_extend_8_to_64 (v : UInt64) : UInt64 := v.toUInt8.toUInt64
-@[simp] def zero_extend_16_to_64 (v : UInt64) : UInt64 := v.toUInt16.toUInt64
-@[simp] def zero_extend_32_to_64 (v : UInt64) : UInt64 := v.toUInt32.toUInt64
-
--- Partial register write helpers: merge new value into existing register
--- These preserve upper bits of dst and write lower bits from src
-@[simp] def write_low_8 (dst src : UInt64) : UInt64 := (dst &&& 0xFFFFFFFFFFFFFF00) ||| zero_extend_8_to_64 src
-@[simp] def write_low_16 (dst src : UInt64) : UInt64 := (dst &&& 0xFFFFFFFFFFFF0000) ||| zero_extend_16_to_64 src
--- movl zero-extends, so it's just zero_extend_32_to_64 (no preservation)
-
--- Convert Int64 immediate to UInt64
+-- Convert Int64 immediate to UInt64 (implicit sign extension if the constant
+-- was of a smaller width in the source ASM file)
 @[simp] def eval_imm (v : Int64) : UInt64 := v.toUInt64
-
-
-
 
 -- Compute effective address: base + idx*scale + disp
 def effective_addr [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → α): α :=
