@@ -546,7 +546,7 @@ def eval_typed_operand [Throw α] (s: MachineState) (o: TypedOperand) (ret: UInt
   match o with
   | .typed (.imm v) w => ret (eval_imm v) w
   | .typed (.reg r) () => ret (s.getReg r) r.width
-  | .typed (.mem w base idx scale disp) () => effective_addr s (.mem w base idx scale disp) (fun addr => s.readMem addr w (fun v => ret v w))
+  | .typed e@(.mem w base idx scale disp) () => effective_addr s (e) (fun addr => s.readMem addr w (fun v => ret v w))
 
 def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → Width → α): α :=
   match o with
