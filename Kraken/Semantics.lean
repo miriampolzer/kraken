@@ -290,7 +290,7 @@ deriving Repr, BEq
 -- pushing an immediate to the stack. For that case, we annotate the immediate
 -- with a width.
 inductive TypedOperand
-| typed (o: Operand) (extra: if o matches Operand.imm _ then Width else Unit)
+| typed (o: Operand) (extra: match o with | Operand.imm _ => Width | _ => Unit
 
 instance : Repr TypedOperand where
   reprPrec o n :=
