@@ -11,12 +11,6 @@ For tactics, see Kraken/Tactics.lean.
 import Std
 import Lean.Elab.Tactic.Grind
 
-class Throw α where
-  throw: String → α
-
-def throw {α} [inst: Throw α] :=
-  inst.throw
-
 -- ============================================================================
 -- Width Type
 -- ============================================================================
@@ -493,6 +487,12 @@ def MachineState.getReg (s : MachineState) (r : Reg) : UInt64 :=
 
 def MachineState.setReg (s : MachineState) (r : Reg) (v : UInt64) : MachineState :=
   { s with regs := s.regs.set r v }
+
+class Throw α where
+  throw: String → α
+
+def throw {α} [inst: Throw α] :=
+  inst.throw
 
 def MachineState.readMem [Throw α] (s : MachineState) (addr : Address) (width: Width) (ret: Word → α): α :=
   if addr % 8 != 0 then
