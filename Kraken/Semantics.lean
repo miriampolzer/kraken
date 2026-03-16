@@ -91,14 +91,14 @@ inductive Reg
   | al | bl | cl | dl | sil | dil | spl | bpl
   | r8b | r9b | r10b | r11b | r12b | r13b | r14b | r15b => .W8
 
-@[simp] def Reg.is_base : Reg → Prop
+@[simp] def Reg.IsBase : Reg → Prop
   | rax | rbx | rcx | rdx | rsi | rdi | rsp | rbp
   | r8  | r9  | r10 | r11 | r12 | r13 | r14 | r15 => True
   | _ => False
 
 /-- One of the 16 base registers. We adopt a refinement here to avoid having to
   deal with error cases and requiring [Throw α] on a lot of our specifications -/
-abbrev BaseReg := { r: Reg // r.is_base }
+abbrev BaseReg := { r: Reg // r.IsBase }
 
 /-- Get the 64-bit base register for any alias, along with a proof witness that
   it is indeed one of the 16 base registers. -/
@@ -120,7 +120,7 @@ def Reg.base : Reg → BaseReg
   | r14 | r14d | r14w | r14b => ⟨ .r14, by simp ⟩
   | r15 | r15d | r15w | r15b => ⟨ .r15, by simp ⟩
 
-def Reg.shrink64 (self: BaseReg) (w: Width): Reg :=
+def BaseReg.shrink64 (self: BaseReg) (w: Width): Reg :=
   let ⟨ self, _ ⟩ := self
   match self, w with
   | .rax, .W64 => .rax
@@ -204,7 +204,7 @@ def Reg.shrink64 (self: BaseReg) (w: Width): Reg :=
   | .r15, .W8  => .r15b
 
 def Reg.shrink (self: Reg) (w: Width): Reg :=
-  Reg.shrink64 self.base w
+  self.base.shrink64 w
 
 -- Register State
 -- We choose this representation rather than a `Fin 16 -> Word` to avoid
@@ -471,7 +471,7 @@ def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
   | .r12 => { regs with r12 := v } | .r13 => { regs with r13 := v }
   | .r14 => { regs with r14 := v } | .r15 => { regs with r15 := v }
 
-def w64_is_base (r: Reg) (h: r.width = .W64): r.is_base :=
+def w64_IsBase (r: Reg) (h: r.width = .W64): r.IsBase :=
   by
     cases r
     <;> simp at *
@@ -483,7 +483,7 @@ def w64_is_base (r: Reg) (h: r.width = .W64): r.is_base :=
     - 8-bit: preserves upper 56 bits -/
 def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
   match h: r.width with
-  | .W64 => regs.set64 ⟨ r, w64_is_base r h ⟩ v
+  | .W64 => regs.set64 ⟨ r, w64_IsBase r h ⟩ v
   | .W32 => regs.set64 r.base (mask32 v)
   | .W16 => regs.set64 r.base (write16 (regs.get64 r.base) v)
   | .W8 => regs.set64 r.base (write8 (regs.get64 r.base) v)
@@ -546,7 +546,7 @@ def eval_typed_operand [Throw α] (s: MachineState) (o: TypedOperand) (ret: UInt
   match o with
   | .typed (.imm v) w => ret (eval_imm v) w
   | .typed (.reg r) () => ret (s.getReg r) r.width
-  | .typed e@(.mem w base idx scale disp) () => effective_addr s (e) (fun addr => s.readMem addr w (fun v => ret v w))
+  | .typed e@(.mem w _ _ _ _) () => effective_addr s (e) (fun addr => s.readMem addr w (fun v => ret v w))
 
 def eval_reg_or_mem [Throw α] (s : MachineState) (o : Operand) (ret: UInt64 → Width → α): α :=
   match o with
