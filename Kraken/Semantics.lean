@@ -9,7 +9,6 @@ For tactics, see Kraken/Tactics.lean.
 -/
 
 import Std
-import Lean.Elab.Tactic.Grind
 
 -- ============================================================================
 -- Width Type
@@ -45,6 +44,13 @@ def Width.toShiftMask : Width → UInt64
 -- Registers Enumeration (extended with aliases)
 -- ============================================================================
 
+inductive BaseReg 
+| rax | rbx | rcx | rdx
+| rsi | rdi | rsp | rbp
+| r8  | r9  | r10 | r11
+| r12 | r13 | r14 | r15
+deriving Repr, BEq, DecidableEq
+
 /-- x86-64 registers including aliased sub-registers.
     - 64-bit: rax, rbx, ..., r15
     - 32-bit: eax, ebx, ..., r15d (zero-extend on write per Intel SDM)
@@ -52,11 +58,7 @@ def Width.toShiftMask : Width → UInt64
     - 8-bit low: al, bl, ..., r15b (preserve upper bits on write)
  -/
 inductive Reg
-  -- 64-bit registers
-  | rax | rbx | rcx | rdx
-  | rsi | rdi | rsp | rbp
-  | r8  | r9  | r10 | r11
-  | r12 | r13 | r14 | r15
+  | Full (_ : BaseReg) -- 64-bit registers
   -- 32-bit aliases (zero-extend to 64-bit on write)
   | eax | ebx | ecx | edx
   | esi | edi | esp | ebp
@@ -74,10 +76,43 @@ inductive Reg
   | r12b | r13b | r14b | r15b
   deriving Repr, BEq, DecidableEq
 
-/-- Get the width of a register. -/
+abbrev Reg.rax := Full .rax 
+abbrev Reg.rbx := Full .rbx 
+abbrev Reg.rcx := Full .rcx 
+abbrev Reg.rdx:= Full .rdx
+abbrev Reg.rsi := Full .rsi 
+abbrev Reg.rdi := Full .rdi 
+abbrev Reg.rsp := Full .rsp 
+abbrev Reg.rbp:= Full .rbp
+abbrev Reg.r8  := Full .r8  
+abbrev Reg.r9  := Full .r9  
+abbrev Reg.r10 := Full .r10 
+abbrev Reg.r11:= Full .r11
+abbrev Reg.r12 := Full .r12 
+abbrev Reg.r13 := Full .r13 
+abbrev Reg.r14 := Full .r14 
+abbrev Reg.r15:= Full .r15
+
+def Reg.base : Reg → BaseReg
+| .rax | .eax | .ax  | .al =>   .rax
+| .rbx | .ebx | .bx  | .bl =>   .rbx
+| .rcx | .ecx | .cx  | .cl =>   .rcx
+| .rdx | .edx | .dx  | .dl =>   .rdx
+| .rsi | .esi | .si  | .sil =>  .rsi
+| .rdi | .edi | .di  | .dil =>  .rdi
+| .rsp | .esp | .sp  | .spl =>  .rsp
+| .rbp | .ebp | .bp  | .bpl =>  .rbp
+| .r8  | .r8d | .r8w | .r8b  => .r8
+| .r9  | .r9d | .r9w | .r9b  => .r9
+| .r10 | .r10d| .r10w| .r10b => .r10
+| .r11 | .r11d| .r11w| .r11b => .r11
+| .r12 | .r12d| .r12w| .r12b => .r12
+| .r13 | .r13d| .r13w| .r13b => .r13
+| .r14 | .r14d| .r14w| .r14b => .r14
+| .r15 | .r15d| .r15w| .r15b => .r15
+
 @[simp] def Reg.width : Reg → Width
-  | rax | rbx | rcx | rdx | rsi | rdi | rsp | rbp
-  | r8  | r9  | r10 | r11 | r12 | r13 | r14 | r15 => .W64
+  | Full _ => .W64
   | eax | ebx | ecx | edx | esi | edi | esp | ebp
   | r8d | r9d | r10d | r11d | r12d | r13d | r14d | r15d => .W32
   | ax | bx | cx | dx | si | di | sp | bp
@@ -85,37 +120,7 @@ inductive Reg
   | al | bl | cl | dl | sil | dil | spl | bpl
   | r8b | r9b | r10b | r11b | r12b | r13b | r14b | r15b => .W8
 
-@[simp] def Reg.IsBase : Reg → Prop
-  | rax | rbx | rcx | rdx | rsi | rdi | rsp | rbp
-  | r8  | r9  | r10 | r11 | r12 | r13 | r14 | r15 => True
-  | _ => False
-
-/-- One of the 16 base registers. We adopt a refinement here to avoid having to
-  deal with error cases and requiring [Throw α] on a lot of our specifications -/
-abbrev BaseReg := { r: Reg // r.IsBase }
-
-/-- Get the 64-bit base register for any alias, along with a proof witness that
-  it is indeed one of the 16 base registers. -/
-def Reg.base : Reg → BaseReg
-  | rax | eax | ax | al => ⟨ .rax, by simp ⟩
-  | rbx | ebx | bx | bl => ⟨ .rbx, by simp ⟩
-  | rcx | ecx | cx | cl => ⟨ .rcx, by simp ⟩
-  | rdx | edx | dx | dl => ⟨ .rdx, by simp ⟩
-  | rsi | esi | si | sil => ⟨ .rsi, by simp ⟩
-  | rdi | edi | di | dil => ⟨ .rdi, by simp ⟩
-  | rsp | esp | sp | spl => ⟨ .rsp, by simp ⟩
-  | rbp | ebp | bp | bpl => ⟨ .rbp, by simp ⟩
-  | r8  | r8d  | r8w  | r8b  => ⟨ .r8, by simp ⟩
-  | r9  | r9d  | r9w  | r9b  => ⟨ .r9, by simp ⟩
-  | r10 | r10d | r10w | r10b => ⟨ .r10, by simp ⟩
-  | r11 | r11d | r11w | r11b => ⟨ .r11, by simp ⟩
-  | r12 | r12d | r12w | r12b => ⟨ .r12, by simp ⟩
-  | r13 | r13d | r13w | r13b => ⟨ .r13, by simp ⟩
-  | r14 | r14d | r14w | r14b => ⟨ .r14, by simp ⟩
-  | r15 | r15d | r15w | r15b => ⟨ .r15, by simp ⟩
-
-def BaseReg.shrink64 (self: BaseReg) (w: Width): Reg :=
-  let ⟨ self, _ ⟩ := self
+def BaseReg.low (self: BaseReg) (w: Width): Reg :=
   match self, w with
   | .rax, .W64 => .rax
   | .rax, .W32 => .eax
@@ -197,8 +202,8 @@ def BaseReg.shrink64 (self: BaseReg) (w: Width): Reg :=
   | .r15, .W16 => .r15w
   | .r15, .W8  => .r15b
 
-def Reg.shrink (self: Reg) (w: Width): Reg :=
-  self.base.shrink64 w
+def Reg.low (self: Reg) (w: Width): Reg :=
+  self.base.low w
 
 -- Register State
 -- We choose this representation rather than a `Fin 16 -> Word` to avoid
@@ -440,7 +445,6 @@ def Instr.is_ctrl
   (dst &&& ~~~Width.W16.toMask) ||| mask16 src
 
 def Registers.get64 (regs: Registers) (r: BaseReg): UInt64 :=
-  let ⟨ r, _ ⟩ := r
   match r with
   | .rax => regs.rax | .rbx => regs.rbx | .rcx => regs.rcx | .rdx => regs.rdx
   | .rsi => regs.rsi | .rdi => regs.rdi | .rsp => regs.rsp | .rbp => regs.rbp
@@ -463,7 +467,6 @@ def Registers.get (regs : Registers) (r : Reg) : UInt64 :=
 
 def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
     Registers :=
-  let ⟨ r, _ ⟩ := r
   match r with
   -- 64-bit registers: direct write
   | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
@@ -475,19 +478,14 @@ def Registers.set64 (regs : Registers) (r: BaseReg) (v: UInt64):
   | .r12 => { regs with r12 := v } | .r13 => { regs with r13 := v }
   | .r14 => { regs with r14 := v } | .r15 => { regs with r15 := v }
 
-def w64_IsBase (r: Reg) (h: r.width = .W64): r.IsBase :=
-  by
-    cases r
-    <;> simp at *
-
 /-- Set a register value with appropriate aliasing behavior:
     - 64-bit: direct write
     - 32-bit: zero-extends to 64-bit (clears upper 32 bits) per Intel SDM
     - 16-bit: preserves upper 48 bits
     - 8-bit: preserves upper 56 bits -/
 def Registers.set (regs : Registers) (r : Reg) (v : UInt64) : Registers :=
-  match h: r.width with
-  | .W64 => regs.set64 ⟨ r, w64_IsBase r h ⟩ v
+  match r.width with
+  | .W64 => regs.set64 r.base v
   | .W32 => regs.set64 r.base (mask32 v)
   | .W16 => regs.set64 r.base (write16 (regs.get64 r.base) v)
   | .W8 => regs.set64 r.base (write8 (regs.get64 r.base) v)
@@ -697,13 +695,13 @@ def x64 [Throw α] (s : MachineState) (i : Instr) (jmp : MachineState → Positi
   | .mul src =>
       let w := src.width
       src.interp s (fun src_v =>
-      let rax_v := s.getReg (Reg.shrink .rax w)
+      let rax_v := s.getReg (Reg.low .rax w)
       let result := rax_v.toNat * src_v.toNat
       if w != .W8 then
         let lo := (UInt64.ofNat result) &&& w.toMask
         let hi := UInt64.ofNat (result >>> w.toNat)
-        let r_lo := Reg.shrink .rax w
-        let r_hi := Reg.shrink .rdx w
+        let r_lo := Reg.low .rax w
+        let r_hi := Reg.low .rdx w
         let s := s.setReg r_lo lo
         let s := s.setReg r_hi hi
         -- mul sets OF and CF if high half is non-zero
@@ -720,11 +718,11 @@ def x64 [Throw α] (s : MachineState) (i : Instr) (jmp : MachineState → Positi
   | .mulx r_hi r_lo src1 =>
       let w := r_hi.width
       src1.interp s (fun src1_v =>
-      let src2_v := s.getReg (Reg.shrink .rdx w)
+      let src2_v := s.getReg (Reg.low .rdx w)
       let result := src1_v.toNat * src2_v.toNat
       -- Semantics say that if hi and lo are aliased, the value written is hi
-      let s := s.setReg (r_lo.shrink w) (UInt64.ofNat result)
-      let s := s.setReg (r_hi.shrink w) (UInt64.ofNat (result >>> w.toNat))
+      let s := s.setReg (r_lo.low w) (UInt64.ofNat result)
+      let s := s.setReg (r_hi.low w) (UInt64.ofNat (result >>> w.toNat))
       ret s)
 
   | .imul dst src =>
