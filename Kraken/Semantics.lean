@@ -322,6 +322,9 @@ def RegOrMem.width : RegOrMem → Width
 inductive Operand | RegOrMem (_ : RegOrMem) | imm (v : Constexpr)
 deriving Repr, BEq
 
+abbrev Operand.reg (r : Reg) : Operand := .RegOrMem (.reg r)
+abbrev Operand.mem (m : MemoryOperand) : Operand := .RegOrMem (.mem m)
+
 abbrev Dst := RegOrMem
 
 instance : Coe RegOrMem Operand where coe := Operand.RegOrMem

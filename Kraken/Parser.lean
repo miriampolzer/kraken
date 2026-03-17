@@ -145,10 +145,10 @@ def parseImm : Parser Operand := do
     Int64.ofInt (v - 18446744073709551616)
   else
     Int64.ofInt v
-  pure (.imm i64)
+  pure (.imm i64.toInt)
 
 /-- Parse a memory operand: disp(%base), (%base,%idx,scale), etc. -/
-def parseMemory : Parser Operand := do
+def parseMemory : Parser MemoryOperand := do
   skipHWs
   -- Optional displacement
   let disp ← parseInt <|> pure 0
@@ -169,13 +169,17 @@ def parseMemory : Parser Operand := do
         let _ ← pchar ','
         skipHWs
         let s ← parseInt
-        if s != 1 && s != 2 && s != 4 && s != 8 then
-          fail s!"invalid scale {s}, must be 1, 2, 4, or 8"
         pure s.toNat) <|> pure 1
     | none => pure 1
+  let scale ← match scale with
+              | 1 => pure Width.W8
+              | 2 => pure Width.W16
+              | 4 => pure Width.W32
+              | 8 => pure Width.W64
+              | s => fail s!"invalid scale {s}, must be 1, 2, 4, or 8"
   skipHWs
   let _ ← pchar ')'
-  pure (.mem base idx scale disp)
+  pure (MemoryOperand.mk FIXME_width base idx scale disp)
 
 /-- Parse any operand: register, immediate, or memory. -/
 def parseOperand : Parser Operand := do
@@ -192,7 +196,7 @@ def parseOperand : Parser Operand := do
     fail s!"expected operand, got '{c}'"
 
 /-- Parse a register or memory operand (not immediate). -/
-def parseRegOrMem : Parser Operand := do
+def parseRegOrMem : Parser RegOrMem := do
   skipHWs
   let c ← peek!
   if c == '%' then
@@ -202,11 +206,6 @@ def parseRegOrMem : Parser Operand := do
     parseMemory
   else
     fail "expected register or memory operand"
-
-/-- Parse a register operand (as Operand type). -/
-def parseRegOperand : Parser Operand := do
-  let r ← parseReg64
-  pure (.reg r)
 
 /-- Check if operand is a memory operand. -/
 def isMemory : Operand → Bool
@@ -255,27 +254,27 @@ def parseInstr : Parser Instr := do
   match mn with
   -- Arithmetic (two-operand: src, dst) - 64-bit
   | "add" | "addq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    let src ← parseOperand; parseComma; let dst ← parseReg
     checkNoTwoMemory src dst
     pure (.add dst src)
   | "adc" | "adcq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    let src ← parseOperand; parseComma; let dst ← parseReg
     checkNoTwoMemory src dst
     pure (.adc dst src)
   | "adcx" | "adcxq" => do
     -- Per Intel SDM: ADCX dest must be a register (r32/r64)
-    let src ← parseRegOrMem; parseComma; let dst ← parseRegOperand
+    let src ← parseRegOrMem; parseComma; let dst ← parseReg
     pure (.adcx dst src)
   | "adox" | "adoxq" => do
     -- Per Intel SDM: ADOX dest must be a register (r32/r64)
-    let src ← parseRegOrMem; parseComma; let dst ← parseRegOperand
+    let src ← parseRegOrMem; parseComma; let dst ← parseReg
     pure (.adox dst src)
   | "sub" | "subq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    let src ← parseOperand; parseComma; let dst ← parseReg
     checkNoTwoMemory src dst
     pure (.sub dst src)
   | "sbb" | "sbbq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
+    let src ← parseOperand; parseComma; let dst ← parseReg
     checkNoTwoMemory src dst
     pure (.sbb dst src)
   | "mul" | "mulq" => do
@@ -289,8 +288,8 @@ def parseInstr : Parser Instr := do
     -- Per Intel SDM: MULX dest1 and dest2 must be registers
     -- mulxq src, lo, hi (AT&T: src → rdx*src, result in lo:hi)
     let src ← parseRegOrMem; parseComma
-    let lo ← parseRegOperand; parseComma
-    let hi ← parseRegOperand
+    let lo ← parseReg; parseComma
+    let hi ← parseReg
     pure (.mulx hi lo src)
   | "imul" | "imulq" => do
     let src ← parseRegOrMem; parseComma; let dst ← parseRegOrMem
@@ -398,10 +397,10 @@ def parseInstr : Parser Instr := do
 
   -- Byte swap
   | "bswap" | "bswapq" => do
-    let dst ← parseRegOrMem
+    let dst ← parseReg
     pure (.bswap dst)
   | "bswapl" => do
-    let dst ← parseRegOrMem
+    let dst ← parseReg
     pure (.bswapl dst)
 
   -- 32-bit arithmetic
@@ -454,18 +453,18 @@ def parseInstr : Parser Instr := do
   -- Set byte on condition
   | "setc" | "setb" => do
     let dst ← parseRegOrMem
-    pure (.setc dst)
+    pure (.setcc CondCode.c dst)
   | "setnc" | "setae" | "setnb" => do
     let dst ← parseRegOrMem
-    pure (.setnc dst)
+    pure (.setcc CondCode.nc dst)
 
   -- Conditional moves (64-bit only - non-q variants are 32-bit which we don't support)
   | "cmovcq" | "cmovbq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.cmovc dst src)
+    let src ← parseRegOrMem; parseComma; let dst ← parseReg
+    pure (.cmovcc CondCode.c dst src)
   | "cmoveq" | "cmovzq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.cmove dst src)
+    let src ← parseRegOrMem; parseComma; let dst ← parseReg
+    pure (.cmovcc CondCode.z dst src)
 
   -- Stack operations
   | "push" => do
