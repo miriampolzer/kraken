@@ -342,38 +342,35 @@ instance : Repr SrcAndWidth where
 inductive CondCode
 | z    -- Zero (ZF=1)
 | nz   -- Not Zero (ZF=0)
-| b    -- Below/Carry (CF=1)
-| ae   -- Above or Equal (CF=0)
+| c    -- Below/Carry (CF=1)
+| nc   -- Above or Equal (CF=0)
 | a    -- Above (CF=0 ∧ ZF=0)
 | be   -- Below or Equal (CF=1 ∨ ZF=1)
 deriving Repr, BEq, DecidableEq
+abbrev CondCode.e := CondCode.z
+abbrev CondCode.ne := CondCode.nz
+abbrev CondCode.b := CondCode.c
+abbrev CondCode.ae := CondCode.nc
 
 -- Instructions (extended for scalar crypto benchmarks)
 inductive Instr
   -- Arithmetic (64-bit)
   | add  (_ : Dst) (src : Operand)                   -- addq: dst += src, sets CF, ZF, OF
   | adc  (_ : Dst) (src : Operand)                   -- adcq: dst += src + CF, sets CF, ZF
-  | adcx (_ : Reg) (src : Operand)           -- adcxq: dst += src + CF, only affects CF (ADX)
-  | adox (dst : Reg) (src : Operand)           -- adoxq: dst += src + OF, only affects OF (ADX)
+  | adcx (_ : Reg) (src : Operand)                   -- adcxq: dst += src + CF, only affects CF (ADX)
+  | adox (dst : Reg) (src : Operand)                 -- adoxq: dst += src + OF, only affects OF (ADX)
   | sub  (_ : Dst) (src : Operand)                   -- subq: dst -= src, sets CF, ZF, OF
   | sbb  (_ : Dst) (src : Operand)                   -- sbbq: dst -= src + CF, sets CF, ZF
-  | mul  (src : RegOrMem)                       -- mulq: rdx:rax = rax * src
-  | mulx (hi lo : Reg) (src : RegOrMem)         -- mulxq: hi:lo = rdx * src (BMI2, no flags)
+  | mul  (src : RegOrMem)                            -- mulq: rdx:rax = rax * src
+  | mulx (hi lo : Reg) (src : RegOrMem)              -- mulxq: hi:lo = rdx * src (BMI2, no flags)
   | imul (_ : Dst) (src : Operand)                   -- imulq: dst *= src (truncated, sets OF/CF)
-  | neg  (_ : Dst)                       -- negq: dst = -dst, sets CF, ZF, OF
-  | dec  (_ : Dst)                       -- decq: dst--, sets ZF (not CF!)
-
-  -- Arithmetic (32-bit, zero-extend results)
-  | addl (dst src : Operand)                   -- addl: 32-bit add, zero-extends
-  | subl (dst src : Operand)                   -- subl: 32-bit subtract, zero-extends
-  | negl (dst : Operand)                       -- negl: 32-bit negate, zero-extends
-  | notl (dst : Operand)                       -- notl: 32-bit bitwise NOT, zero-extends
-  | decl (dst : Operand)                       -- decl: 32-bit decrement, zero-extends
+  | neg  (_ : Dst)                                   -- negq: dst = -dst, sets CF, ZF, OF
+  | dec  (_ : Dst)                                   -- decq: dst--, sets ZF (not CF!)
 
   -- Move/Load
   | mov   (_ : Dst) (src : Operand)                  -- movq/movabs: 64-bit move
-  | movzx (_ : Dst) (src : Operand)                 -- movzbl: byte to 32-bit zero-extend (then to 64)
-  | lea   (_ : Reg) (src : MemoryOperand)          -- leaq: dst = effective address
+  | movzx (_ : Dst) (src : Operand)                  -- movzbl: byte to 32-bit zero-extend (then to 64)
+  | lea   (_ : Reg) (src : MemoryOperand)            -- leaq: dst = effective address
 
   -- Shifts (64-bit)
   | shl  (_ : Dst) (count : Operand)                 -- shlq: logical shift left
@@ -382,20 +379,12 @@ inductive Instr
   | shld (_ : Dst) (src count : Operand)             -- shldq: double-precision shift left
   | shrd (_ : Dst) (src count : Operand)             -- shrdq: double-precision shift right
 
-  -- Shifts (32-bit, zero-extend results)
-  | shll (_ : Dst) (count : Operand)                 -- shll: 32-bit shift left
-  | shrl (_ : Dst) (count : Operand)                 -- shrl: 32-bit shift right
-
   -- Rotates (64-bit)
   | rol  (_ : Dst) (count : Operand)                 -- rolq: rotate left
   | ror  (_ : Dst) (count : Operand)                 -- rorq: rotate right
 
-  -- Rotates (32-bit, zero-extend results)
-  | roll (_ : Dst) (count : Operand)                 -- roll: 32-bit rotate left
-  | rorl (_ : Dst) (count : Operand)                 -- rorl: 32-bit rotate right
-
   -- Byte swap
-  | bswap  (dst : Reg)                     -- bswapq: 64-bit byte swap
+  | bswap  (dst : Reg)                               -- bswapq: 64-bit byte swap
 
   -- Bitwise (64-bit)
   | xor  (_ : Dst) (src : Operand)                   -- xorq: dst ^= src, clears CF/OF, sets ZF
@@ -403,41 +392,23 @@ inductive Instr
   | or   (_ : Dst) (src : Operand)                   -- orq: dst |= src, clears CF/OF, sets ZF
 
   -- Test (AND but discard result, set flags)
-  | test (a b : Operand)                       -- testq: a AND b, set flags
+  | test (a b : Operand)                             -- testq: a AND b, set flags
 
   -- Compare (sets flags only)
-  | cmp  (a : RegOrMem) (b : Operand)                       -- cmpq: compute a - b, set flags
+  | cmp  (a : RegOrMem) (b : Operand)                -- cmpq: compute a - b, set flags
 
   -- Stack operations. Because `push` may take an immediate, we have to take a
   -- width.
-  | push (src : SrcAndWidth)                  -- pushq: RSP -= N, [RSP] = src
-  | pop  (_ : Dst)                       -- popq: dst = [RSP], RSP += N
+  | push (src : SrcAndWidth)                         -- pushq: RSP -= N, [RSP] = src
+  | pop  (_ : Dst)                                   -- popq: dst = [RSP], RSP += N
 
   -- Set byte on condition
-  | setc  (_ : Dst)                      -- setc/setb: set byte to 1 if CF=1, else 0
-  | setnc (_ : Dst)                      -- setnc/setae: set byte to 1 if CF=0, else 0
-
-  -- Conditional move (64-bit)
-  | cmovc (_ : Dst) (src : Operand)                  -- cmovcq: move if CF=1
-  | cmove (_ : Dst) (src : Operand)                  -- cmoveq: move if ZF=1
+  | setcc (_ : CondCode) (_ : Dst)                   -- setCC: set byte to condition code
+  | cmovcc (_ : CondCode) (_ : Reg) (src : RegOrMem) -- cmovcq: move if condition satisfied
 
   -- Control flow
-  | jmp (target : Label)                     -- Unconditional jump
-  | ret                                        -- Return from function
-  -- Conditional jump: jcc (condition code, target)
-  -- Mapping from AT&T syntax to CondCode:
-  --   AT&T    CondCode   Condition          Flags tested
-  --   ----    --------   ---------          ------------
-  --   jz      .z         Zero               ZF=1
-  --   jnz     .nz        Not Zero           ZF=0
-  --   je      .z         Equal (alias)      ZF=1
-  --   jne     .nz        Not Equal (alias)  ZF=0
-  --   jb      .b         Below (unsigned)   CF=1
-  --   jc      .b         Carry (alias)      CF=1
-  --   jnc     .ae        Not Carry (alias)  CF=0
-  --   jae     .ae        Above/Equal        CF=0
-  --   ja      .a         Above (unsigned)   CF=0 ∧ ZF=0
-  --   jbe     .be        Below/Equal        CF=1 ∨ ZF=1
+  | jmp (target : Label)                             -- Unconditional jump
+  | ret                                              -- Return from function
   | jcc (cc : CondCode) (target : Label)
   deriving Repr
 
@@ -608,6 +579,15 @@ def sub_overflow (w: Width) (a b : UInt64) : Bool := sub_overflow_with_borrow w 
 
 def Reg.interp (r : Reg) (s : MachineState) (ret : UInt64 → α) :=
   ret (s.getReg r)
+
+def CondCode.interp (cc : CondCode) (s : MachineState) : Bool :=
+  match cc with
+  | .z  => s.flags.zf           -- Zero: ZF=1
+  | .nz => !s.flags.zf          -- Not Zero: ZF=0
+  | .c  => s.flags.cf           -- Below: CF=1
+  | .nc => !s.flags.cf          -- Above/Equal: CF=0
+  | .a  => !s.flags.cf && !s.flags.zf  -- Above: CF=0 ∧ ZF=0
+  | .be => s.flags.cf || s.flags.zf    -- Below/Equal: CF=1 ∨ ZF=1
 
 section
 variable [Layout]
@@ -934,40 +914,16 @@ def x64 [Throw α] (s : MachineState) (i : Instr) (jmp : MachineState → Positi
   | .test a b =>
       a.interp s (fun a_v =>
       b.interp s (fun b_v =>
-      let result := a_v &&& b_v
-      let zf := result == 0
+      let zf := (a_v &&& b_v) == 0
       ret { s with flags := { zf, of := false, cf := false }}))
 
-  -- ============================================================================
-  -- Set byte on condition
-  -- ============================================================================
+  | .setcc cc dst =>
+      s.set dst (cc.interp s).toUInt64 ret
 
-  | .setc dst =>
-      -- Set byte to 1 if CF=1, else 0
-      -- TODO: UInt64.ofBool?
-      let val : UInt64 := if s.flags.cf then 1 else 0
-      s.set dst val ret
-
-  | .setnc dst =>
-      -- Set byte to 1 if CF=0, else 0
-      let val : UInt64 := if !s.flags.cf then 1 else 0
-      s.set dst val ret
-
-  -- ============================================================================
-  -- Conditional moves
-  -- ============================================================================
-
-  | .cmovc dst src =>
-      if s.flags.cf then
-        src.interp s (fun src_v =>
-        s.set dst src_v ret)
-      else ret s
-
-  | .cmove dst src =>
-      if s.flags.zf then
-        src.interp s (fun src_v =>
-        s.set dst src_v ret)
-      else ret s
+  | .cmovcc cc dst src =>
+      src.interp s (fun src =>
+      let v := if cc.interp s then src else s.getReg dst
+      ret (s.setReg dst v))
 
   -- ============================================================================
   -- Stack operations
@@ -997,19 +953,10 @@ def x64 [Throw α] (s : MachineState) (i : Instr) (jmp : MachineState → Positi
       jmp s l
 
   | .jcc cc l =>
-      let cond := match cc with
-        | .z  => s.flags.zf           -- Zero: ZF=1
-        | .nz => !s.flags.zf          -- Not Zero: ZF=0
-        | .b  => s.flags.cf           -- Below: CF=1
-        | .ae => !s.flags.cf          -- Above/Equal: CF=0
-        | .a  => !s.flags.cf && !s.flags.zf  -- Above: CF=0 ∧ ZF=0
-        | .be => s.flags.cf || s.flags.zf    -- Below/Equal: CF=1 ∨ ZF=1
-      if cond then
+      if cc.interp s then
         jmp s l
       else
         ret s
-
-  | _ => throw "TODO: unreachable?"
 
 def lookup [Throw α] (p: Program) (l: Label) (ret: List Instr → α) : α :=
   match List.find? (fun (l', _) => l' = l) p with
