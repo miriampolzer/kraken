@@ -42,7 +42,7 @@ def base {w} (r : Reg w) : Reg64 := match r with
 def offset {w} (r : Reg w) : Nat := match r with
   | .low _ _ => 0
   | .ah | .bh | .ch | .dh => 8
-  end Reg
+end Reg
 
 structure Reg64s where
   rax : UInt64 := 0
@@ -168,9 +168,55 @@ def ConstExpr.interp [Layout] : ConstExpr → Position → _root_.Int64
 inductive RegOrRip (w : Width) | Reg (_ : Reg w) | Rip
 deriving Repr, BEq, DecidableEq
 
+instance: BEq ((w: Width) × RegOrRip w) where
+  beq := fun (p1: ((w: Width) × RegOrRip w)) (p2: ((w: Width) × RegOrRip w)) =>
+    let ⟨ w1, r1 ⟩ := p1
+    let ⟨ w2, r2 ⟩ := p2
+    if h: w1 = w2 then
+      r1 = (h ▸ r2)
+    else
+      false
+
+instance: BEq ((w: Width) × Reg w) where
+  beq := fun (p1: ((w: Width) × Reg w)) (p2: ((w: Width) × Reg w)) =>
+    let ⟨ w1, r1 ⟩ := p1
+    let ⟨ w2, r2 ⟩ := p2
+    if h: w1 = w2 then
+      r1 = (h ▸ r2)
+    else
+      false
+
+instance: DecidableEq ((w: Width) × RegOrRip w) := by
+  intros p1 p2
+  rcases p1 with ⟨ w1, r1 ⟩
+  rcases p2 with ⟨ w2, r2 ⟩
+  by_cases h: w1 = w2
+  . subst h -- rw leaves a heterogeneous equality
+    by_cases h2: r1 = r2
+    . apply isTrue
+      simp_all
+    . apply isFalse
+      simp_all
+  . apply isFalse
+    simp_all
+
+instance: DecidableEq ((w: Width) × Reg w) := by
+  intros p1 p2
+  rcases p1 with ⟨ w1, r1 ⟩
+  rcases p2 with ⟨ w2, r2 ⟩
+  by_cases h: w1 = w2
+  . subst h -- rw leaves a heterogeneous equality
+    by_cases h2: r1 = r2
+    . apply isTrue
+      simp_all
+    . apply isFalse
+      simp_all
+  . apply isFalse
+    simp_all
+
 structure AddrExpr where
-  base : Option (Σ w, RegOrRip w)
-  idx : Option ((Σ w, Reg w) × Width)
+  base : Option ((w: Width) × RegOrRip w)
+  idx : Option (((w: Width) × Reg w) × Width)
   disp : ConstExpr := .Int64 0
 deriving Repr, BEq, DecidableEq
 
