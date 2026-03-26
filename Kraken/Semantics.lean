@@ -221,9 +221,6 @@ instance: DecidableEq ((w: Width) × Reg w) := by
     simp_all
 
 structure AddrExpr where
-  -- JP: should we instead have RegOrRip be | (w: Width) (r: Reg w) | Rip so
-  -- that we avoid pairing the Rip case with a dummy value? Otherwise, settle on
-  -- W64 and do | Rip: RegOrRip W64
   base : Option (Σ w, RegOrRip w)
   idx : Option ((Σ w, Reg w) × Width)
   disp : ConstExpr := .Int64 0
