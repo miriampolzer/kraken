@@ -25,6 +25,7 @@ def skipHWs : Parser Unit := do
 
 /-- Skip a line comment starting with # or //. -/
 def skipLineComment : Parser Unit := do
+  -- JP: the '/' below is presumably a dummy value?
   let _ ← pchar '#' <|> (pstring "//" *> pure '/')
   let _ ← many (satisfy fun c => c != '\n')
   pure ()
@@ -73,67 +74,91 @@ where
 def parseName : Parser String := do
   let first ← satisfy fun c => c.isAlpha || c == '_' || c == '.'
   let rest ← many (satisfy fun c => c.isAlphanum || c == '_' || c == '.')
-  pure (String.mk (#[first] ++ rest).toList)
+  pure (String.ofList (#[first] ++ rest).toList)
 
 -- ============================================================================
 -- Register Parsing
 -- ============================================================================
 
+section RegParsing
+
+open Reg
+
+
+abbrev RegW := Σ w, Reg w
+
 /-- Parse a register name. Returns the Reg (may be an alias like eax, ax, al). -/
-def parseRegName : Parser Reg := do
+def parseRegName : Parser RegW := do
   let name ← parseName
   match name.toLower with
   -- 64-bit registers
-  | "rax" => pure .rax | "rbx" => pure .rbx | "rcx" => pure .rcx | "rdx" => pure .rdx
-  | "rsi" => pure .rsi | "rdi" => pure .rdi | "rsp" => pure .rsp | "rbp" => pure .rbp
-  | "r8"  => pure .r8  | "r9"  => pure .r9  | "r10" => pure .r10 | "r11" => pure .r11
-  | "r12" => pure .r12 | "r13" => pure .r13 | "r14" => pure .r14 | "r15" => pure .r15
+  | "rax" => pure ⟨ .W64, rax ⟩ | "rbx" => pure ⟨ .W64, rbx ⟩ | "rcx" => pure ⟨ .W64, rcx ⟩ | "rdx" => pure ⟨ .W64, rdx ⟩
+  | "rsi" => pure ⟨ .W64, rsi ⟩ | "rdi" => pure ⟨ .W64, rdi ⟩ | "rsp" => pure ⟨ .W64, rsp ⟩ | "rbp" => pure ⟨ .W64, rbp ⟩
+  | "r8"  => pure ⟨ .W64, r8  ⟩ | "r9"  => pure ⟨ .W64, r9 ⟩  | "r10" => pure ⟨ .W64, r10 ⟩ | "r11" => pure ⟨ .W64, r11 ⟩
+  | "r12" => pure ⟨ .W64, r12 ⟩ | "r13" => pure ⟨ .W64, r13 ⟩ | "r14" => pure ⟨ .W64, r14 ⟩ | "r15" => pure ⟨ .W64, r15 ⟩
   -- 32-bit aliases
-  | "eax" => pure .eax | "ebx" => pure .ebx | "ecx" => pure .ecx | "edx" => pure .edx
-  | "esi" => pure .esi | "edi" => pure .edi | "esp" => pure .esp | "ebp" => pure .ebp
-  | "r8d"  => pure .r8d  | "r9d"  => pure .r9d  | "r10d" => pure .r10d | "r11d" => pure .r11d
-  | "r12d" => pure .r12d | "r13d" => pure .r13d | "r14d" => pure .r14d | "r15d" => pure .r15d
+  | "eax" => pure ⟨ .W32, eax ⟩ | "ebx" => pure ⟨ .W32, ebx ⟩ | "ecx" => pure ⟨ .W32, ecx ⟩ | "edx" => pure ⟨ .W32, edx ⟩
+  | "esi" => pure ⟨ .W32, esi ⟩ | "edi" => pure ⟨ .W32, edi ⟩ | "esp" => pure ⟨ .W32, esp ⟩ | "ebp" => pure ⟨ .W32, ebp ⟩
+  | "r8d"  => pure ⟨ .W32, r8d ⟩  | "r9d"  => pure ⟨ .W32, r9d ⟩  | "r10d" => pure ⟨ .W32, r10d ⟩ | "r11d" => pure ⟨ .W32, r11d ⟩
+  | "r12d" => pure ⟨ .W32, r12d ⟩ | "r13d" => pure ⟨ .W32, r13d ⟩ | "r14d" => pure ⟨ .W32, r14d ⟩ | "r15d" => pure ⟨ .W32, r15d ⟩
   -- 16-bit aliases
-  | "ax" => pure .ax | "bx" => pure .bx | "cx" => pure .cx | "dx" => pure .dx
-  | "si" => pure .si | "di" => pure .di | "sp" => pure .sp | "bp" => pure .bp
-  | "r8w"  => pure .r8w  | "r9w"  => pure .r9w  | "r10w" => pure .r10w | "r11w" => pure .r11w
-  | "r12w" => pure .r12w | "r13w" => pure .r13w | "r14w" => pure .r14w | "r15w" => pure .r15w
+  | "ax" => pure ⟨ .W16, ax ⟩ | "bx" => pure ⟨ .W16, bx ⟩ | "cx" => pure ⟨ .W16, cx ⟩ | "dx" => pure ⟨ .W16, dx ⟩
+  | "si" => pure ⟨ .W16, si ⟩ | "di" => pure ⟨ .W16, di ⟩ | "sp" => pure ⟨ .W16, sp ⟩ | "bp" => pure ⟨ .W16, bp ⟩
+  | "r8w"  => pure ⟨ .W16, r8w ⟩  | "r9w"  => pure ⟨ .W16, r9w ⟩  | "r10w" => pure ⟨ .W16, r10w ⟩ | "r11w" => pure ⟨ .W16, r11w ⟩
+  | "r12w" => pure ⟨ .W16, r12w ⟩ | "r13w" => pure ⟨ .W16, r13w ⟩ | "r14w" => pure ⟨ .W16, r14w ⟩ | "r15w" => pure ⟨ .W16, r15w ⟩
   -- 8-bit aliases
-  | "al" => pure .al | "bl" => pure .bl | "cl" => pure .cl | "dl" => pure .dl
-  | "sil" => pure .sil | "dil" => pure .dil | "spl" => pure .spl | "bpl" => pure .bpl
-  | "r8b"  => pure .r8b  | "r9b"  => pure .r9b  | "r10b" => pure .r10b | "r11b" => pure .r11b
-  | "r12b" => pure .r12b | "r13b" => pure .r13b | "r14b" => pure .r14b | "r15b" => pure .r15b
+  | "al" => pure ⟨ .W8, al ⟩ | "bl" => pure ⟨ .W8, bl ⟩ | "cl" => pure ⟨ .W8, cl ⟩ | "dl" => pure ⟨ .W8, dl ⟩
+  | "sil" => pure ⟨ .W8, sil ⟩ | "dil" => pure ⟨ .W8, dil ⟩ | "spl" => pure ⟨ .W8, spl ⟩ | "bpl" => pure ⟨ .W8, bpl ⟩
+  | "r8b"  => pure ⟨ .W8, r8b ⟩  | "r9b"  => pure ⟨ .W8, r9b ⟩  | "r10b" => pure ⟨ .W8, r10b ⟩ | "r11b" => pure ⟨ .W8, r11b ⟩
+  | "r12b" => pure ⟨ .W8, r12b ⟩ | "r13b" => pure ⟨ .W8, r13b ⟩ | "r14b" => pure ⟨ .W8, r14b ⟩ | "r15b" => pure ⟨ .W8, r15b ⟩
   | _ => fail s!"unknown register: {name}"
 
 /-- Parse a register operand: %rax, %eax, %ax, %al, etc. -/
-def parseReg : Parser Reg := do
+def parseReg : Parser RegW := do
   skipHWs
   let _ ← pchar '%'
   parseRegName
 
+abbrev RegOrRipW := Σ w, RegOrRip w
+
+def parseRegOrRip : Parser RegOrRipW := do
+  let r ← (do
+    let ⟨ w, r ⟩ ← parseRegName
+    pure ⟨ w, RegOrRip.Reg r ⟩
+  ) <|> (do
+    let _ ← pstring "%rip"
+    -- JP: dummy value here...?
+    pure ⟨ .W64, .Rip ⟩
+  )
+  pure r
+
 /-- Parse a register, requiring 64-bit. -/
-def parseReg64 : Parser Reg := do
+def parseReg64 : Parser RegW := do
   let r ← parseReg
-  if r.width != .W64 then fail "expected 64-bit register"
+  if r.1 != .W64 then fail "expected 64-bit register"
   else pure r
 
 /-- Parse a register, requiring 32-bit. -/
-def parseReg32 : Parser Reg := do
+def parseReg32 : Parser RegW := do
   let r ← parseReg
-  if r.width != .W32 then fail "expected 32-bit register"
+  if r.1 != .W32 then fail "expected 32-bit register"
   else pure r
 
 -- ============================================================================
 -- Operand Parsing
 -- ============================================================================
 
+abbrev OperandW := Σ w, Operand w
+
 /-- Parse an immediate operand: $42, $-17, $0xff.
     Accepts any 64-bit value (0 to 2^64-1) as a bit pattern.
     Values like $0xFFFFFFFFFFFFFFFF are interpreted as -1 in two's complement. -/
-def parseImm : Parser Operand := do
-  skipHWs
+def parseInt64 : Parser ConstExpr := do
   let _ ← pchar '$'
   let v ← parseInt
+  -- JP: why not simply Int64.ofInt? Would that not implement the behavior
+  -- below?
+
   -- Accept any value that fits in 64 bits
   -- Negative values: must be >= Int64.min (-2^63)
   -- Positive values: must be < 2^64 (allows unsigned representation like 0xFFFFFFFFFFFFFFFF)
@@ -145,16 +170,21 @@ def parseImm : Parser Operand := do
     Int64.ofInt (v - 18446744073709551616)
   else
     Int64.ofInt v
-  pure (.imm i64.toInt)
+  pure (.Int64 i64)
 
-/-- Parse a memory operand: disp(%base), (%base,%idx,scale), etc. -/
-def parseMemory : Parser MemoryOperand := do
+def parseLabel : Parser ConstExpr := do
+  let _ ← pchar '.'
+  let n ← parseName
+  pure (.Label n)
+
+/-- Parse a memory operand (a.k.a. "address expression"): disp(%base), (%base,%idx,scale), etc. -/
+def parseMemory : Parser AddrExpr := do
   skipHWs
   -- Optional displacement
-  let disp ← parseInt <|> pure 0
+  let disp ← parseInt64 <|> pure (.Int64 0)
   let _ ← pchar '('
   skipHWs
-  let base ← parseReg64
+  let base ← parseRegOrRip
   -- Check for index register
   let idx ← (do
     skipHWs
@@ -177,23 +207,46 @@ def parseMemory : Parser MemoryOperand := do
               | 4 => pure Width.W32
               | 8 => pure Width.W64
               | s => fail s!"invalid scale {s}, must be 1, 2, 4, or 8"
+  -- JP: this is slightly inexact, in that we allow parsing a scale without an
+  -- index, but not a big deal
   skipHWs
   let _ ← pchar ')'
-  pure (MemoryOperand.mk FIXME_width base idx scale disp)
+  -- Some adapters between the parsed components and the expected dependent
+  -- pairs:
+  let idx := Option.map (fun idx => (idx, scale)) idx
+  pure ({ base, idx, disp })
 
-/-- Parse any operand: register, immediate, or memory. -/
-def parseOperand : Parser Operand := do
+def parseImm w : Parser (Operand w) := do
   skipHWs
   let c ← peek!
-  if c == '%' then
-    let r ← parseReg
-    pure (.reg r)
-  else if c == '$' then
-    parseImm
-  else if c == '(' || c == '-' || c.isDigit then
-    parseMemory
-  else
-    fail s!"expected operand, got '{c}'"
+  let i ←
+    match c with
+    | '$' => parseInt64
+    | '.' => parseLabel
+    | _ => fail "not an immediate"
+  pure (.imm i)
+
+/-- Parse any operand: register, immediate, or memory. -/
+def parseOperand : Parser OperandW := do
+  skipHWs
+  let c ← peek!
+  match c with
+  | '%' =>
+    let ⟨ w, r ⟩ ← parseReg
+    pure ⟨ w, .reg r ⟩
+  | '$' =>
+    let i ← parseInt64
+    -- JP: another dummy here, maybe we'll have to write a helper later on along
+    -- the lines of adjust_width
+    pure ⟨ .W64, .imm i ⟩
+  | '.' =>
+    let i ← parseLabel
+    pure (.imm i)
+  | _ =>
+    if c == '(' || c == '-' || c.isDigit then
+      pure (.mem parseMemory)
+    else
+      fail s!"expected operand, got '{c}'"
 
 /-- Parse a register or memory operand (not immediate). -/
 def parseRegOrMem : Parser RegOrMem := do

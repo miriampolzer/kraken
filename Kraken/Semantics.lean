@@ -215,8 +215,8 @@ instance: DecidableEq ((w: Width) × Reg w) := by
     simp_all
 
 structure AddrExpr where
-  base : Option ((w: Width) × RegOrRip w)
-  idx : Option (((w: Width) × Reg w) × Width)
+  base : Option (Σ w, RegOrRip w)
+  idx : Option ((Σ w, Reg w) × Width)
   disp : ConstExpr := .Int64 0
 deriving Repr, BEq, DecidableEq
 
