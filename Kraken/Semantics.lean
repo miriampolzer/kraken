@@ -14,6 +14,10 @@ def BitVec.replaceLow (old : BitVec w) (new : BitVec n) : BitVec w :=
   (BitVec.append (old.drop w) new).setWidth _
 
 inductive Width | W8 | W16 | W32 | W64 deriving Repr, BEq, DecidableEq
+
+instance : ToString Width where
+  toString | .W8 => "w8" | .W16 => "w16" | .W32 => "w32" | .W64 => "w64"
+
 namespace Width
 def bits : Width → Nat | W8 => 8 | W16 => 16 | W32 => 32 | W64 => 64
 def bytes : Width → Nat | W8 => 1 | W16 => 2 | W32 => 4 | W64 => 8
@@ -165,7 +169,9 @@ def ConstExpr.interp [Layout] : ConstExpr → Position → _root_.Int64
   | .add e1 e2, p => e1.interp p + e2.interp p
   | .sub e1 e2, p => e1.interp p - e2.interp p
 
-inductive RegOrRip (w : Width) | Reg (_ : Reg w) | Rip
+inductive RegOrRip: (w : Width) → Type where
+  | Reg: Reg w → RegOrRip w
+  | Rip: RegOrRip .W64
 deriving Repr, BEq, DecidableEq
 
 instance: BEq ((w: Width) × RegOrRip w) where
@@ -215,12 +221,15 @@ instance: DecidableEq ((w: Width) × Reg w) := by
     simp_all
 
 structure AddrExpr where
+  -- JP: should we instead have RegOrRip be | (w: Width) (r: Reg w) | Rip so
+  -- that we avoid pairing the Rip case with a dummy value? Otherwise, settle on
+  -- W64 and do | Rip: RegOrRip W64
   base : Option (Σ w, RegOrRip w)
   idx : Option ((Σ w, Reg w) × Width)
   disp : ConstExpr := .Int64 0
 deriving Repr, BEq, DecidableEq
 
-def RipRel {w : Width} (e : ConstExpr) : AddrExpr := .mk (.some ⟨w, .Rip⟩) .none (.sub e .after_current_instruction)
+def RipRel (e : ConstExpr) : AddrExpr := .mk (.some ⟨.W64, .Rip⟩) .none (.sub e .after_current_instruction)
 
 class AddressSize where address_size : Width
 def address_size [inst: AddressSize] := inst.address_size
