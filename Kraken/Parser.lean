@@ -219,8 +219,7 @@ def parseImm w : Parser (Operand w) := do
   let i ←
     match c with
     | '$' => parseInt64
-    | '.' => parseLabel
-    | _ => fail "not an immediate"
+    | _ => parseLabel
   pure (.imm i)
 
 -- We need to eagerly parse (to move through the syntax), but we may need to
