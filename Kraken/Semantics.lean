@@ -352,7 +352,9 @@ inductive Operation (w : Width)
   | call (target : RelRegOrMem)
   | ret
   | nop (length : Nat)
-  | nopalign (alignment : Nat) (unless_more_than : Nat)
+  -- TODO: optiona third argument, with the caveat that `.align 16,,0` is valid
+  -- syntax
+  | nopalign (alignment : Nat) (pad : Option Nat)
 deriving Repr, DecidableEq
 
 def StatusFlags.from_result {w} (result : BitVec w) (f : StatusFromResultFlags) : StatusFlags :=
@@ -647,84 +649,6 @@ def Instr.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α]
   (next : MachineData → α) (branch : Label → MachineData → α) (jmp : Int64 → MachineData → α) : α :=
   Operation.interp (w := i.operation_size ) (address_size := .mk i.address_size) i.operation p s next branch jmp
 
-
-namespace WithBlocks
-inductive Block
-| code (global : Bool) (_ : List Instr)
-| data (_ : ByteArray)
-
-def Program := List (Label × Block)
-
-def Program.positions (prog : Program) : List Position :=
-  prog.flatMap (fun (lbl, b) => match b with
-  | .code _ instrs => List.map (Prod.mk lbl) (List.range instrs.length) | _ => [])
-
-def Program.position_of_addr [Layout] [Throw α] (prog : Program) (a : Int64) (ret : Position → α) : α :=
-  match prog.positions.filter (fun p => layout p = a) with
-  | [p] => ret p
-  | [] => throw s!"address {a} does not correspond to any known position"
-  | l => throw s!"address {a} does not corresponds to multiple positions: {l}"
-
-def Program.instrs_of_label [Throw α] (prog : Program) (l : Label) (ret : List Instr → α) : α :=
-  match prog.find? (fun (l', _) => l' = l) with
-  | .some (_, .code _ b) => ret b
-  | .some (_, .data _) => throw s!"found data block for label {repr l}"
-  | .none => throw s!"label not found {repr l}"
-
-def Program.instrs_of_position [Throw α] (prog : Program) (p : Position) (ret : List Instr → α) : α :=
-  prog.instrs_of_label p.1 (fun instrs => ret (instrs.drop p.2))
-
-def Program.next_label [Throw α] (p : Program) (l : Label) (ret : Label → α) : α :=
-  match List.head? (List.tail (List.dropWhile (fun (l', _) => l' != l) p)) with
-  | .some (l, _) => ret l
-  | .none => throw s!"fell through the end of the program"
-
-def Program.straightline' [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
-  (suffix : List Instr) (s : MachineData) (p : Position) (fallthrough : MachineData → α) (ret : MachineData × Int64 → α) : α :=
-  match suffix with
-  | [] => fallthrough s
-  | i :: suffix =>
-      Instr.interp i s p
-        (fun s => Program.straightline' suffix s p.next fallthrough ret)
-        (fun l s => ret (s, label l))
-        (fun p s => ret (s, p))
-
-def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
-  (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=
-  prog.position_of_addr s.2 (fun p =>
-  prog.instrs_of_position p (fun block =>
-  Program.straightline' block s.1 p
-    (fun s => prog.next_label p.1 (fun l => ret (s, label l)))
-    ret))
-
-def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Option (MachineData × Int64) :=
-  if until_ s then .some s else
-  let α := Option (MachineData × Int64)
-  let : Throw α := { throw _ := .none }
-  let : Layout := { layout p := let (l, i) := p; .ofNat (prog.findIdx (fun (l', _) => l' = l) * 2^32 + i) }
-  let : Undefined Bool α := { undefined ret := ret (hash s.1.regs % 2 != 0) }
-  let : Undefined StatusFlags α := { undefined ret := let h := (hash s.1.regs).toBitVec; ret (.mk h[0] h[1] h[2] h[3] h[4] h[5]) }
-  let (w : Width) : Undefined w.type α := { undefined ret := ret ((hash s.1.regs).toBitVec.setWidth w.bits) }
-  match prog.straightline s Option.some with
-  | .some s => eval prog s until_
-  | .none => .none
-partial_fixpoint
-
-/-- info: some 42 -/
-#guard_msgs in
-#eval 
-  let prog := [
-    ("main", Block.code true [
-      (.mk .W64 .W64 (.lea (.low .rax .W64) (.mk .none .none (.Int64 41)))),
-      (.mk .W64 .W64 (.inc (.Reg (.low .rax .W64)))),
-      (.mk .W64 .W64 .ret)]) ]
-  let data := { dmem := .ofList [(0x100, 0x1337)], regs := {rsp := 0x100} }
-  (eval prog (data, 0) (fun (_, pc) => pc = 0x1337)).bind (fun s => .some s.1.regs.rax)
-
-end WithBlocks
-
-
-namespace WithoutBlocks
 inductive Directive
 | Instr (_ : Instr)
 | Label (_ : Label)
@@ -805,8 +729,6 @@ partial_fixpoint
     .Instr (.mk .W64 .W64 .ret) ]
   let data := { dmem := .ofList [(0x100, 0x1337)], regs := {rsp := 0x100} }
   (eval prog (data, 0) (fun (_, pc) => pc = 0x1337)).bind (fun s => .some s.1.regs.rax)
-
-end WithoutBlocks
 
 namespace Reg
 @[match_pattern] abbrev rax := low .rax .W64

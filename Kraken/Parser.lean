@@ -42,18 +42,12 @@ def digit : Parser Char := satisfy fun c => c >= '0' && c <= '9'
 def hexDigit : Parser Char := satisfy fun c =>
   (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
-/-- Parse a signed integer (decimal or hex). -/
-def parseInt : Parser Int := do
-  skipHWs
-  let neg ← (pchar '-' *> pure true) <|> pure false
-  let val ← parseHexOrDec
-  pure (if neg then -val else val)
-where
-  hexVal (c : Char) : Int :=
+def hexVal (c : Char) : Int :=
     if c >= '0' && c <= '9' then c.toNat - '0'.toNat
     else if c >= 'a' && c <= 'f' then c.toNat - 'a'.toNat + 10
     else c.toNat - 'A'.toNat + 10
-  parseHexOrDec : Parser Int := do
+
+def parseHexOrDec : Parser Int := do
     let c ← peek!
     if c == '0' then do
       skip
@@ -69,6 +63,13 @@ where
     else do
       let digits ← many1 digit
       pure (digits.foldl (fun acc d => acc * 10 + (d.toNat - '0'.toNat)) 0)
+
+/-- Parse a signed integer (decimal or hex). -/
+def parseInt : Parser Int := do
+  skipHWs
+  let neg ← (pchar '-' *> pure true) <|> pure false
+  let val ← parseHexOrDec
+  pure (if neg then -val else val)
 
 /-- Parse a name (identifier or label). -/
 def parseName : Parser String := do
@@ -162,9 +163,12 @@ def parseInt64 : Parser ConstExpr := do
     Int64.ofInt v
   pure (.Int64 i64)
 
-def parseLabel : Parser ConstExpr := do
+def parseLabelRaw : Parser Label := do
   let _ ← pchar '.'
-  let n ← parseName
+  parseName
+
+def parseLabel : Parser ConstExpr := do
+  let n ← parseLabelRaw
   pure (.Label n)
 
 /-- Parse a memory operand (a.k.a. "address expression"): disp(%base), (%base,%idx,scale), etc. -/
@@ -256,20 +260,48 @@ def parseRegOrMem: Parser (MaybeTyped RegOrMem) := do
   else
     fail "expected register or memory operand"
 
+def parseRelRegOrMem: Parser RelRegOrMem := do
+  skipHWs
+  (do
+    let ⟨ w, r ⟩ ← parseRegW
+    if h: w = .W64 then
+      pure (.Reg (h ▸ r))
+    else
+      fail "expected a 64-bit register in relative addressing position"
+  ) <|> (do
+    -- FIXME
+    let e ← parseLabel
+    pure (.Rel e)
+  ) <|> (do
+    let m ← parseMemory
+    pure (.mem m)
+  )
+
+/-- TODO: this ought to be able to parse more in the ConstExpr category, just
+  like many of the other functions above -/
+def parseShiftExpr: Parser ShiftCountExpr := do
+  skipHWs
+  (do
+    let i ← parseInt64
+    pure (.imm8 i))
+  <|> (do
+    let _ ← pstring "%cl"
+    pure .cl)
+
 -- ============================================================================
 -- Condition Code Parsing
 -- ============================================================================
 
 /-- Parse a condition code from a conditional jump mnemonic suffix. -/
-def parseCondCode (suffix : String) : Except String CondCode :=
-  match suffix.toLower with
-  | "z" | "e" => .ok .z
-  | "nz" | "ne" => .ok .nz
-  | "b" | "c" | "nae" => .ok .b
-  | "ae" | "nc" | "nb" => .ok .ae
-  | "a" | "nbe" => .ok .a
-  | "be" | "na" => .ok .be
-  | _ => .error s!"unknown condition code: {suffix}"
+def parseCondCode (suffix : String.Slice) : Parser CondCode :=
+  match suffix.copy.toLower with
+  | "z" | "e" => .pure .z
+  | "nz" | "ne" => .pure .nz
+  | "b" | "c" | "nae" => .pure .b
+  | "ae" | "nc" | "nb" => .pure .ae
+  | "a" | "nbe" => .pure .a
+  | "be" | "na" => .pure .be
+  | _ => .fail s!"unknown condition code: {suffix}"
 
 -- ============================================================================
 -- Instruction Parsing
@@ -315,34 +347,45 @@ def parseRegWithType := parseWithType parseReg
 def parseOperandWithType := parseWithType parseOperand
 def parseRegOrMemWithType := parseWithType parseRegOrMem
 
+-- TODO: why is the dot notation not working here?
+def Char.toWidth (c: Char): Parser Width :=
+  match c with
+  | 'b' => pure .W8
+  | 'w' => pure .W16
+  | 'l' => pure .W32
+  | 'q' => pure .W64
+  | _ => fail "impossible: unknown suffix"
+
 def instrWidth (s: String): Parser Width :=
   match s.back? with
   | .none => fail "impossible: empty instruction"
-  | .some c =>
-    match c with
-    | 'b' => pure .W8
-    | 'w' => pure .W16
-    | 'l' => pure .W32
-    | 'q' => pure .W64
-    | _ => fail "impossible: unknown suffix"
+  | .some c => Char.toWidth c
 
 def commaSeparated (w: Option Width) (p1: Parser (MaybeTyped T1)) (p2: Parser (MaybeTyped T2))
-  (mk: {w: Width} → T1 w → T2 w → Operation w): Parser Instr := do
+  (mk: {w: Width} → T2 w → T1 w → Operation w): Parser Instr := do
     match w with
     | .none =>
       let src ← p1
       parseComma
       let ⟨ w, src, dst ⟩ ← ascribeOrInfer src p2
-      pure ⟨ .W64, w, mk src dst ⟩
+      pure ⟨ .W64, w, mk dst src ⟩
     | .some w =>
       let src ← parseWithType p1 w
       let dst ← parseWithType p2 w
-      pure ⟨ .W64, w, mk src dst ⟩
+      -- flip the direction here
+      pure ⟨ .W64, w, mk dst src ⟩
 
 def assertW (v: MaybeTyped T): Parser (Σ w: Width, T w) :=
   match v with
   | ⟨ .none, _ ⟩ => fail "missing type annotation"
   | ⟨ .some w, T ⟩ => pure ⟨ w, T ⟩
+
+def Option.toParser (self: Option T): Parser T :=
+  match self with
+  | .some v => pure v
+  | .none => fail "empty option"
+
+instance : Coe (Option T) (Parser T) where coe := Option.toParser
 
 /-- Parse an instruction mnemonic and its operands.
     AT&T syntax: src, dst (reversed from Intel). -/
@@ -354,48 +397,48 @@ def parseInstr : Parser Instr := do
   match mn with
   -- Arithmetic (two-operand: src, dst) - 64-bit
   | "add" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .add dst src)
+    commaSeparated .none parseOperand parseRegOrMem .add
 
   | "addq" | "addl" | "addw" | "addb" =>
     let w ← instrWidth mn 
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .add dst src)
+    commaSeparated w parseOperand parseRegOrMem .add
 
   | "adc" =>
-    commaSeparated .none parseOperand parseReg (fun src dst => .adc dst src)
+    commaSeparated .none parseOperand parseRegOrMem .adc
 
   | "adcq" | "adcl" | "adcw" | "adcb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseReg (fun src dst => .adc dst src)
+    commaSeparated w parseOperand parseRegOrMem .adc
 
   | "adcx" =>
     -- Per Intel SDM: ADCX dest must be a register (r32/r64)
-    commaSeparated .none parseRegOrMem parseReg (fun src dst => .adcx dst src)
+    commaSeparated .none parseRegOrMem parseReg .adcx
 
   | "adcxq" | "adcxl" =>
     let w ← instrWidth mn
-    commaSeparated w parseRegOrMem parseReg (fun src dst => .adcx dst src)
+    commaSeparated w parseRegOrMem parseReg .adcx
 
   | "adox" =>
     -- Per Intel SDM: ADOX dest must be a register (r32/r64)
-    commaSeparated .none parseRegOrMem parseReg (fun src dst => .adox dst src)
+    commaSeparated .none parseRegOrMem parseReg .adox
 
   | "adoxq" | "adoxl" =>
     let w ← instrWidth mn
-    commaSeparated w parseRegOrMem parseReg (fun src dst => .adox dst src)
+    commaSeparated w parseRegOrMem parseReg .adox
 
   | "sub" =>
-    commaSeparated .none parseOperand parseReg (fun src dst => .sub dst src)
+    commaSeparated .none parseOperand parseRegOrMem .sub
 
   | "subq" | "subl" | "subw" | "subb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseReg (fun src dst => .sub dst src)
+    commaSeparated w parseOperand parseRegOrMem .sub
 
   | "sbb" =>
-    commaSeparated .none parseOperand parseReg (fun src dst => .sbb dst src)
+    commaSeparated .none parseOperand parseRegOrMem .sbb
 
   | "sbbq" | "sbbl" | "sbbw" | "sbbb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseReg (fun src dst => .sbb dst src)
+    commaSeparated w parseOperand parseRegOrMem .sbb
 
   | "mul" =>
     let src ← parseRegOrMem
@@ -480,12 +523,26 @@ def parseInstr : Parser Instr := do
     pure ⟨ .W64, w, .dec dst ⟩
 
   | "mov" | "movabs" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .mov dst src)
+    commaSeparated .none parseOperand parseRegOrMem .mov
 
   | "movq" | "movl" | "movw" | "movb"
   | "movabsq" | "movabsl" | "movabsw" | "movabsb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .mov dst src)
+    commaSeparated w parseOperand parseRegOrMem .mov
+
+  | "movzx" =>
+    -- Must be a register otherwise lacking type info
+    let ⟨ w_src, src ⟩ ← parseRegW
+    let ⟨ w_dst, dst ⟩ ← parseRegW
+    pure ⟨ .W64, w_dst, .movzx dst (.Reg src) ⟩
+
+  | "movzbl" | "movzbq" | "movzwl" =>
+    let w_dst ← instrWidth mn
+    let c_src ← String.Pos.Raw.get? mn (.mk (mn.length - 2))
+    let w_src ← Char.toWidth c_src
+    let src ← parseRegWithType w_src
+    let dst ← parseRegWithType w_dst
+    pure ⟨ .W64, w_dst, .movzx dst (.Reg src) ⟩
 
   | "lea" =>
     let src ← parseMemory; parseComma
@@ -503,186 +560,194 @@ def parseInstr : Parser Instr := do
 
   -- Bitwise - 64-bit
   | "xor" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .xor dst src)
+    commaSeparated .none parseOperand parseRegOrMem .xor
 
   | "xorq" | "xorl" | "xorw" | "xorb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .xor dst src)
+    commaSeparated w parseOperand parseRegOrMem .xor
 
   | "and" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .and dst src)
+    commaSeparated .none parseOperand parseRegOrMem .and
 
   | "andq" | "andl" | "andw" | "andb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .and dst src)
+    commaSeparated w parseOperand parseRegOrMem .and
 
   | "or" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .or dst src)
+    commaSeparated .none parseOperand parseRegOrMem .or
 
   | "orq" | "orl" | "orw" | "orb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .or dst src)
+    commaSeparated w parseOperand parseRegOrMem .or
 
   -- Compare - 64-bit
   | "cmp" => do
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .cmp dst src)
+    commaSeparated .none parseOperand parseRegOrMem .cmp
 
   | "cmpq" | "cmpl" | "cmpw" | "cmpb" => do
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .cmp dst src)
+    commaSeparated w parseOperand parseRegOrMem .cmp
 
   -- Test (sets flags based on AND without storing result)
   | "test" =>
-    commaSeparated .none parseOperand parseRegOrMem (fun src dst => .test dst src)
+    commaSeparated .none parseOperand parseRegOrMem .test
 
   | "testq" | "testl" | "testw" | "testb" =>
     let w ← instrWidth mn
-    commaSeparated w parseOperand parseRegOrMem (fun src dst => .test dst src)
+    commaSeparated w parseOperand parseRegOrMem .test
 
   -- Shift instructions - 64-bit
-  | "shl" | "shlq" | "sal" | "salq" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.shl dst cnt)
-
-  | "shll" | "sall" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.shll dst cnt)
-
-  | "shr" | "shrq" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.shr dst cnt)
-
-  | "shrl" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.shrl dst cnt)
-
-  | "sar" | "sarq" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.sar dst cnt)
-
-  | "shld" | "shldq" => do
-    -- shld %cl, %src, %dst (shift dst left, fill with src high bits)
-    let cnt ← parseOperand; parseComma
-    let src ← parseRegOrMem; parseComma
+  | "shl"
+  | "sal" =>
+    let cnt ← parseShiftExpr; parseComma
     let dst ← parseRegOrMem
-    pure (.shld dst src cnt)
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .shl dst cnt ⟩
 
-  | "shrd" | "shrdq" => do
-    let cnt ← parseOperand; parseComma
-    let src ← parseRegOrMem; parseComma
+  | "shlq" | "shll" | "shlw" | "shlb"
+  | "salq" | "sall" | "salw" | "salb" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .shl dst cnt ⟩
+
+  | "shr" =>
+    let cnt ← parseShiftExpr; parseComma
     let dst ← parseRegOrMem
-    pure (.shrd dst src cnt)
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .shr dst cnt ⟩
+
+  | "shrq" | "shrl" | "shrw" | "shrb" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .shr dst cnt ⟩
+
+  | "sar" =>
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMem
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .sar dst cnt ⟩
+
+  | "sarq" | "sarl" | "sarw" | "sarb" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .sar dst cnt ⟩
+
+  | "shld" =>
+    let cnt ← parseShiftExpr; parseComma
+    commaSeparated .none parseReg parseRegOrMem (fun dst src => .shld dst src cnt) 
+
+  | "shldq" | "shldl" | "shldw" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    commaSeparated w parseReg parseRegOrMem (fun dst src => .shld dst src cnt) 
+
+  | "shrd" =>
+    let cnt ← parseShiftExpr; parseComma
+    commaSeparated .none parseReg parseRegOrMem (fun dst src => .shrd dst src cnt) 
+
+  | "shrdq" | "shrdl" | "shrdw" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    commaSeparated w parseReg parseRegOrMem (fun dst src => .shrd dst src cnt) 
 
   -- Rotate instructions - 64-bit
-  | "rol" | "rolq" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.rol dst cnt)
-  | "roll" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.roll dst cnt)
-  | "ror" | "rorq" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.ror dst cnt)
-  | "rorl" => do
-    let cnt ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.rorl dst cnt)
+  | "rol" =>
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMem
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .rol dst cnt ⟩
+
+  | "rolq" | "roll" | "rolw" | "rolb" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .rol dst cnt ⟩
+
+  | "ror" =>
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMem
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .ror dst cnt ⟩
+
+  | "rorq" | "rorl" | "rorw" | "rorb" =>
+    let w ← instrWidth mn
+    let cnt ← parseShiftExpr; parseComma
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .ror dst cnt ⟩
 
   -- Byte swap
-  | "bswap" | "bswapq" => do
-    let dst ← parseReg
-    pure (.bswap dst)
-  | "bswapl" => do
-    let dst ← parseReg
-    pure (.bswapl dst)
+  | "bswap" =>
+    let ⟨ w, dst ⟩ ← parseRegW
+    pure ⟨ .W64, w, .bswap dst ⟩
 
-  -- 32-bit arithmetic
-  | "addl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.addl dst src)
-  | "subl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.subl dst src)
-  | "negl" => do
-    let dst ← parseRegOrMem
-    pure (.negl dst)
-  | "notl" => do
-    let dst ← parseRegOrMem
-    pure (.notl dst)
-  | "decl" => do
-    let dst ← parseRegOrMem
-    pure (.decl dst)
-  | "leal" => do
-    let src ← parseMemory; parseComma
-    let dst ← parseReg32
-    pure (.leal dst src)
-
-  -- 32-bit bitwise
-  | "xorl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.xorl dst src)
-  | "andl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.andl dst src)
-  | "orl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.orl dst src)
-
-  -- Move variants - 16-bit
-  | "movw" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.movw dst src)
-  -- Zero-extending moves
-  | "movzbl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.movzbl dst src)
-  | "movzbq" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.movzbq dst src)
-  | "movzwl" => do
-    let src ← parseOperand; parseComma; let dst ← parseRegOrMem
-    pure (.movzwl dst src)
-
-  -- Set byte on condition
-  | "setc" | "setb" => do
-    let dst ← parseRegOrMem
-    pure (.setcc CondCode.c dst)
-  | "setnc" | "setae" | "setnb" => do
-    let dst ← parseRegOrMem
-    pure (.setcc CondCode.nc dst)
-
-  -- Conditional moves (64-bit only - non-q variants are 32-bit which we don't support)
-  | "cmovcq" | "cmovbq" => do
-    let src ← parseRegOrMem; parseComma; let dst ← parseReg
-    pure (.cmovcc CondCode.c dst src)
-  | "cmoveq" | "cmovzq" => do
-    let src ← parseRegOrMem; parseComma; let dst ← parseReg
-    pure (.cmovcc CondCode.z dst src)
+  | "bswapq" | "bswapl" =>
+    let ⟨ w, dst ⟩ ← parseRegW
+    let w2 ← instrWidth mn
+    if w2 ≠ w then
+      fail "inconsistency in {mn}"
+    else
+      pure ⟨ .W64, w, .bswap dst ⟩
 
   -- Stack operations
-  | "push" => do
+  | "push" =>
     let src ← parseOperand
-    pure (.push src)
-  | "pop" => do
+    let ⟨ w, src ⟩ ← assertW src
+    pure ⟨ .W64, w, .push src ⟩
+
+  | "pushq" | "pushl" | "pushw" | "pushb" =>
+    let w ← instrWidth mn
+    let src ← parseOperandWithType w
+    pure ⟨ .W64, w, .push src ⟩
+
+  | "pop" =>
     let dst ← parseRegOrMem
-    pure (.pop dst)
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .pop dst ⟩
+
+  | "popq" | "popl" | "popw" | "popb" =>
+    let w ← instrWidth mn
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .pop dst ⟩
+
   | "ret" | "retq" =>
-    pure .ret
+    pure ⟨ .W64, .W64, .ret ⟩
+
+  | "call" | "callq" =>
+    let target ← parseRelRegOrMem
+    pure ⟨ .W64, .W64, .call target ⟩
 
   -- Control flow - unconditional jump
-  | "jmp" | "jmpq" => do
-    skipHWs
-    let target ← parseName
-    pure (.jmp target)
+  | "jmp" | "jmpq" =>
+    let target ← parseRelRegOrMem
+    pure ⟨ .W64, .W64, .jmp target ⟩
+
+  | "nop" =>
+    (do
+      skipHWs
+      let sz ← parseHexOrDec
+      pure ⟨ .W64, .W64, .nop sz.toNat ⟩
+    ) <|> (pure ⟨ .W64, .W64, .nop 0 ⟩)
 
   -- Control flow - conditional jumps
   | _ =>
-    if mn.startsWith "j" then do
-      match parseCondCode (mn.drop 1) with
-      | .ok cc => do
-        skipHWs
-        let target ← parseName
-        pure (.jcc cc target)
-      | .error msg => fail msg
+    if mn.startsWith "j" then
+      let cc ← parseCondCode (mn.drop 1)
+      let target ← parseLabelRaw
+      pure ⟨ .W64, .W64, .jcc cc target ⟩
+    else if mn.startsWith "set" then
+      let cc ← parseCondCode (mn.drop 3)
+      let dst ← parseRegOrMemWithType .W8
+      pure ⟨ .W64, .W8, .setcc cc dst ⟩
+    else if mn.startsWith "cmov" then
+      -- TODO: are the suffixed variants really used here? do we truly need to
+      -- handle cmovzb and the like? how many are there? we could conceivably
+      -- just ignore it on the basis that the assembler will bail if there is
+      -- something inconsistent like .cmovzb %rax %rbx
+      let cc ← parseCondCode (mn.drop 4)
+      commaSeparated .none parseRegOrMem parseReg (.cmovcc cc)
     else
       fail s!"unsupported instruction: {mnemonic}"
 
@@ -692,13 +757,13 @@ def parseInstr : Parser Instr := do
 
 /-- Parse an optional label (name followed by colon).
     Uses attempt for proper backtracking if colon is not found. -/
-def parseLabel : Parser (Option Label) := do
+def parseLabelDecl : Parser Label := do
   skipHWs
   (attempt do
     let name ← parseName
     skipHWs
     let _ ← pchar ':'
-    pure (some name)) <|> pure none
+    pure name)
 
 -- ============================================================================
 -- Line and Program Parsing
@@ -706,7 +771,7 @@ def parseLabel : Parser (Option Label) := do
 
 /-- Parse a single line: optional label, optional instruction.
     Returns None if the line is empty or comment-only. -/
-def parseLine : Parser (Option (Option Label × Instr)) := do
+def parseLine : Parser (Option Directive) := do
   skipHWs
   let c ← peek!
   -- Skip empty lines and comment-only lines
@@ -714,19 +779,26 @@ def parseLine : Parser (Option (Option Label × Instr)) := do
     if c == '#' then skipLineComment
     pure none
   else
-    -- Try to parse label
-    let lbl ← parseLabel
-    skipHWs
-    let c2 ← peek!
-    -- Check if there's an instruction after the label
-    if c2 == '\n' || c2 == '#' then
-      -- Label-only line (forward declaration) - not common, but handle it
-      match lbl with
-      | some l => fail s!"label '{l}' without instruction not supported"
-      | none => pure none
-    else
+    -- Try to parse a .align directive
+    (do
+      let _ ← pstring ".align"
+      skipHWs
+      let alignment ← parseHexOrDec
+      let pad ← (do
+        skipHWs
+        let _ ← parseComma
+        skipHWs
+        let pad ← parseHexOrDec
+        pure (some pad.toNat)
+      ) <|> pure none
+      pure (some (Directive.Instr ⟨ .W64, .W64, .nopalign alignment.toNat pad ⟩))
+    ) <|> (do
+      let l ← parseLabelDecl
+      pure (some (Directive.Label l))
+    ) <|> (do
+      skipHWs
       let instr ← parseInstr
-      pure (some (lbl, instr))
+      pure (Directive.Instr instr))
 
 /-- Skip to the end of the current line. -/
 def skipToEndOfLine : Parser Unit := do
@@ -738,12 +810,12 @@ partial def parseProgramAux (acc : Program) : Parser Program := do
   skipHWs
   let done ← (eof *> pure true) <|> pure false
   if done then
-    pure acc
+    pure acc.reverse
   else
     let line ← parseLine
     skipToEndOfLine
     match line with
-    | some entry => parseProgramAux (acc ++ [entry])
+    | some entry => parseProgramAux (entry :: acc)
     | none => parseProgramAux acc
 
 def parseProgram : Parser Program := parseProgramAux []
@@ -755,7 +827,7 @@ def parseProgram : Parser Program := parseProgramAux []
 /-- Parse an assembly string into a Program.
     Returns an error message on failure. -/
 def parse (input : String) : Except String Program :=
-  match parseProgram input.mkIterator with
+  match parseProgram (String.Legacy.mkIterator input) with
   | .success _ prog => .ok prog
   | .error _ msg => .error msg
 
