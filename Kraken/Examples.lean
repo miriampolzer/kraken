@@ -10,14 +10,20 @@ For tactics, see Kraken/Tactics.lean.
 
 import Kraken.Tactics
 
+noncomputable
+def default (start: Label): MachineState := ({}, layout start)
+
 -- Example 1: single step of execution
 def p1: Program := [
-  (.none, .mov (Reg.rax) (.imm 1)),
+  .Label "start",
+  .Instr ⟨ .W64, .W64, .mov (Reg.rax) (.imm (.Int64 1)) ⟩
 ]
 
 -- OLD: doing things with a heavy-handed `simp`
-example: step1 p1 {} (fun s => s.regs.rax = 1) := by
-  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set]
+example: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
+  simp [step1,p1,Program.straightline,_root_.default]
+  sorry
+  /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
 -- steps, and relying only on low-level tactics

@@ -29,7 +29,7 @@ instance : Layout where
 instance (T: Type): Undefined T Prop where
   undefined ret := ∀ (v: T), ret v
 
-def step1 (p: Program) (s: MachineData × Int64) (post: Post) :=
+def step1 (p: Program) (s: MachineState) (post: Post) :=
   Program.straightline p s post
 
 inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
