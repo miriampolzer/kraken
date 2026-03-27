@@ -657,8 +657,7 @@ inductive Directive
 | ByteArray (_ : ByteArray)
 deriving BEq, DecidableEq, Repr
 
-def Program := List Directive
-deriving Inhabited, Repr
+abbrev Program := List Directive
 
 def Program.positions' (prog : Program) (pc : Option Position) : List Position :=
   match prog, pc with

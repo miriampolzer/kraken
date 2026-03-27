@@ -128,15 +128,17 @@ def parseRegW : Parser RegW := do
 abbrev RegOrRipW := Σ w, RegOrRip w
 
 def parseRegOrRipW : Parser RegOrRipW := do
-  let r ← (do
-    let _ ← pstring "%rip"
+  skipHWs
+  let _ ← pchar '%'
+  (do
+    let _ ← pstring "rip"
     pure ⟨ .W64, .Rip ⟩
   ) <|>
   (do
     let ⟨ w, r ⟩ ← parseRegNameW
     pure ⟨ w, RegOrRip.Reg r ⟩
   )
-  pure r
+
 
 -- ============================================================================
 -- Operand Parsing
@@ -164,9 +166,8 @@ def parseInt64 : Parser ConstExpr := do
     Int64.ofInt v
   pure (.Int64 i64)
 
-def parseLabelRaw : Parser Label := do
-  let _ ← pchar '.'
-  parseName
+-- parseName allows for dots
+def parseLabelRaw : Parser Label := parseName
 
 def parseLabel : Parser ConstExpr := do
   let n ← parseLabelRaw
@@ -175,9 +176,10 @@ def parseLabel : Parser ConstExpr := do
 /-- Parse a memory operand (a.k.a. "address expression"): disp(%base), (%base,%idx,scale), etc. -/
 def parseMemory : Parser AddrExpr := do
   skipHWs
-  -- Optional displacement
-  let disp ← (do let i ← parseInt; pure (.Int64 (Int64.ofInt i))) <|> pure (.Int64 0)
+  -- Optional displacement; TODO: parse ConstExpr generally
+  let disp ← (do let i ← parseInt; pure (.Int64 (Int64.ofInt i))) <|> parseLabel <|> pure (.Int64 0)
   let _ ← pchar '('
+
   skipHWs
   let base ← parseRegOrRipW
   -- Check for index register
@@ -737,6 +739,7 @@ def parseInstr : Parser Instr := do
   | _ =>
     if mn.startsWith "j" then
       let cc ← parseCondCode (mn.drop 1)
+      skipHWs
       let target ← parseLabelRaw
       pure ⟨ .W64, .W64, .jcc cc target ⟩
     else if mn.startsWith "set" then
@@ -771,36 +774,47 @@ def parseLabelDecl : Parser Label := do
 -- Line and Program Parsing
 -- ============================================================================
 
-/-- Parse a single line: optional label, optional instruction.
-    Returns None if the line is empty or comment-only. -/
-def parseLine : Parser (Option Directive) := do
+/-- Parse a single line: optional label, followed by optional instruction or directive.
+    Returns a list of directives found on the line. -/
+def parseLine : Parser (List Directive) := do
   skipHWs
   let c ← peek!
   -- Skip empty lines and comment-only lines
   if c == '\n' || c == '#' then
     if c == '#' then skipLineComment
-    pure none
+    pure []
   else
-    -- Try to parse a .align directive
-    (do
-      let _ ← pstring ".align"
-      skipHWs
-      let alignment ← parseHexOrDec
-      let pad ← (do
-        skipHWs
-        let _ ← parseComma
-        skipHWs
-        let pad ← parseHexOrDec
-        pure (some pad.toNat)
-      ) <|> pure none
-      pure (some (Directive.Instr ⟨ .W64, .W64, .nopalign alignment.toNat pad ⟩))
-    ) <|> (do
+    let label ← (attempt do
       let l ← parseLabelDecl
-      pure (some (Directive.Label l))
-    ) <|> (do
-      skipHWs
-      let instr ← parseInstr
-      pure (Directive.Instr instr))
+      pure (some (Directive.Label l))) <|> pure none
+    skipHWs
+    let instr ← (do
+      let c ← peek!
+      if c == '\n' || c == '#' then
+        pure none
+      else
+        -- Try to parse a .align directive
+        (do
+          let _ ← pstring ".align"
+          skipHWs
+          let alignment ← parseHexOrDec
+          let pad ← (do
+            skipHWs
+            let _ ← parseComma
+            skipHWs
+            let pad ← parseHexOrDec
+            pure (some pad.toNat)
+          ) <|> pure none
+          pure (some (Directive.Instr ⟨ .W64, .W64, .nopalign alignment.toNat pad ⟩))
+        ) <|> (do
+          let instr ← parseInstr
+          pure (some (Directive.Instr instr)))
+    ) <|> pure none
+    match label, instr with
+    | some l, some i => pure [l, i]
+    | some l, none   => pure [l]
+    | none,   some i => pure [i]
+    | none,   none   => pure []
 
 /-- Skip to the end of the current line. -/
 def skipToEndOfLine : Parser Unit := do
@@ -814,11 +828,9 @@ partial def parseProgramAux (acc : Program) : Parser Program := do
   if done then
     pure acc.reverse
   else
-    let line ← parseLine
+    let directives ← parseLine
     skipToEndOfLine
-    match line with
-    | some entry => parseProgramAux (entry :: acc)
-    | none => parseProgramAux acc
+    parseProgramAux (directives.reverse ++ acc)
 
 def parseProgram : Parser Program := parseProgramAux []
 
@@ -849,29 +861,32 @@ end Kraken.Parser
 section Tests
 open Kraken.Parser
 
+-- TODO:
+-- #guard_msgs in
+
 -- Test: Simple instruction
 #eval parse! "addq %rax, %rbx"
--- Expected: [(.none, .add (.reg .rbx) (.reg .rax))]
+-- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .add (.Reg (.low .rbx .W64)) (.RegOrMem (.Reg (.low .rax .W64))) }]
 
 -- Test: Immediate operand
 #eval parse! "movq $42, %rax"
--- Expected: [(.none, .mov (.reg .rax) (.imm 42))]
+-- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.imm 42) }]
 
 -- Test: Memory operand with displacement
 #eval parse! "movq 8(%rsp), %rax"
--- Expected: [(.none, .mov (.reg .rax) (.mem .rsp .none 1 8))]
+-- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.mem .rsp .none 1 8) }]
 
 -- Test: Memory operand with index and scale
 #eval parse! "movq (%rsi, %r15, 8), %rax"
--- Expected: [(.none, .mov (.reg .rax) (.mem .rsi (some .r15) 8 0))]
+-- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.mem .rsi (some .r15) 8 0) }]
 
 -- Test: Labeled instruction
 #eval parse! "loop: addq $1, %rcx"
--- Expected: [(some "loop", .add (.reg .rcx) (.imm 1))]
+-- Expected: [.Label "loop", .Instr { address_size := .W64, operation_size := .W64, operation := .add (.Reg (.low .rcx .W64)) (.imm 1) }]
 
 -- Test: Conditional jump
 #eval parse! "jnz loop"
--- Expected: [(.none, .jcc .nz "loop")]
+-- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .jcc .nz "loop" }]
 
 -- Test: Multi-line program
 #eval parse! "
