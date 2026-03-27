@@ -129,11 +129,12 @@ abbrev RegOrRipW := Σ w, RegOrRip w
 
 def parseRegOrRipW : Parser RegOrRipW := do
   let r ← (do
-    let ⟨ w, r ⟩ ← parseRegNameW
-    pure ⟨ w, RegOrRip.Reg r ⟩
-  ) <|> (do
     let _ ← pstring "%rip"
     pure ⟨ .W64, .Rip ⟩
+  ) <|>
+  (do
+    let ⟨ w, r ⟩ ← parseRegNameW
+    pure ⟨ w, RegOrRip.Reg r ⟩
   )
   pure r
 
@@ -175,7 +176,7 @@ def parseLabel : Parser ConstExpr := do
 def parseMemory : Parser AddrExpr := do
   skipHWs
   -- Optional displacement
-  let disp ← parseInt64 <|> pure (.Int64 0)
+  let disp ← (do let i ← parseInt; pure (.Int64 (Int64.ofInt i))) <|> pure (.Int64 0)
   let _ ← pchar '('
   skipHWs
   let base ← parseRegOrRipW
@@ -258,7 +259,7 @@ def parseRegOrMem: Parser (MaybeTyped RegOrMem) := do
     let m ← parseMemory
     pure ⟨ .none, fun _ => .mem m ⟩
   else
-    fail "expected register or memory operand"
+    fail s!"expected register or memory operand, got {c}"
 
 def parseRelRegOrMem: Parser RelRegOrMem := do
   skipHWs
@@ -371,6 +372,7 @@ def commaSeparated (w: Option Width) (p1: Parser (MaybeTyped T1)) (p2: Parser (M
       pure ⟨ .W64, w, mk dst src ⟩
     | .some w =>
       let src ← parseWithType p1 w
+      parseComma
       let dst ← parseWithType p2 w
       -- flip the direction here
       pure ⟨ .W64, w, mk dst src ⟩
@@ -827,9 +829,10 @@ def parseProgram : Parser Program := parseProgramAux []
 /-- Parse an assembly string into a Program.
     Returns an error message on failure. -/
 def parse (input : String) : Except String Program :=
-  match parseProgram (String.Legacy.mkIterator input) with
+  match parseProgram ⟨ input, input.startPos ⟩ with
   | .success _ prog => .ok prog
-  | .error _ msg => .error msg
+  | .error _ .eof => .error "unexpected end-of-file"
+  | .error _ (.other msg) => .error msg
 
 /-- Parse an assembly string, panicking on failure (for use in #eval). -/
 def parse! (input : String) : Program :=

@@ -649,13 +649,16 @@ def Instr.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α]
   (next : MachineData → α) (branch : Label → MachineData → α) (jmp : Int64 → MachineData → α) : α :=
   Operation.interp (w := i.operation_size ) (address_size := .mk i.address_size) i.operation p s next branch jmp
 
+instance : Repr ByteArray where reprPrec _ _ := "<opaque byte array>"
+
 inductive Directive
 | Instr (_ : Instr)
 | Label (_ : Label)
 | ByteArray (_ : ByteArray)
-deriving BEq, DecidableEq
+deriving BEq, DecidableEq, Repr
 
 def Program := List Directive
+deriving Inhabited, Repr
 
 def Program.positions' (prog : Program) (pc : Option Position) : List Position :=
   match prog, pc with
