@@ -12,10 +12,25 @@ import Kraken.Theorems
 
 -- PROOF INFRASTRUCTURE
 
-def Post := MachineState → Prop
+abbrev MachineState := MachineData × Int64
 
-def step1 (p: Program) (s: MachineState) (post: Post) :=
-  eval1 (m:={ throw _ := False }) p s post
+abbrev Post := MachineState → Prop
+
+instance : Throw Prop where
+  throw _ := False
+
+-- At proof-time, we can only reason about an unknown layout.
+axiom runTimeLayout (p: Position): Int64
+
+noncomputable
+instance : Layout where
+  layout := runTimeLayout
+
+instance (T: Type): Undefined T Prop where
+  undefined ret := ∀ (v: T), ret v
+
+def step1 (p: Program) (s: MachineData × Int64) (post: Post) :=
+  Program.straightline p s post
 
 inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
   | done (initial: MachineState):

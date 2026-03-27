@@ -703,9 +703,11 @@ def Program.straightline' [∀ w : Width, Undefined w.type α] [Undefined Status
 
 def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=
-  prog.position_of_addr s.2 (fun pc =>
+  prog.position_of_addr s.2 (fun (pc: Position) =>
   let skipToLabel := prog.dropWhile (fun d => d != .Label pc.1)
   let skipLabels := skipToLabel.dropWhile (fun d => match d with | .Label _ => true | _ => false)
+  -- JP: why are we never using pc.2 here? is there a skipLabels.drop pc.2
+  -- missing?
   Program.straightline' skipLabels s.1 pc ret)
 
 def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Option (MachineData × Int64) :=
