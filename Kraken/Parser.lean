@@ -864,31 +864,48 @@ open Kraken.Parser
 -- TODO:
 -- #guard_msgs in
 
+open Instr Operand Reg
+
 -- Test: Simple instruction
+/-- info: [(none, Instr.add (Operand.reg (Reg.rbx)) (Operand.reg (Reg.rax)))] -/
+#guard_msgs in
 #eval parse! "addq %rax, %rbx"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .add (.Reg (.low .rbx .W64)) (.RegOrMem (.Reg (.low .rax .W64))) }]
 
 -- Test: Immediate operand
+/-- info: [(none, Instr.mov (Operand.reg (Reg.rax)) (Operand.imm 42))] -/
+#guard_msgs in
 #eval parse! "movq $42, %rax"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.imm 42) }]
 
 -- Test: Memory operand with displacement
+/-- info: [(none, Instr.mov (Operand.reg (Reg.rax)) (Operand.mem (Reg.rsp) none 1 8))] -/
+#guard_msgs in
 #eval parse! "movq 8(%rsp), %rax"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.mem .rsp .none 1 8) }]
 
 -- Test: Memory operand with index and scale
+/--
+info: [(none, Instr.mov (Operand.reg (Reg.rax)) (Operand.mem (Reg.rsi) (some (Reg.r15)) 8 0))]
+-/
+#guard_msgs in
 #eval parse! "movq (%rsi, %r15, 8), %rax"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.mem .rsi (some .r15) 8 0) }]
 
 -- Test: Labeled instruction
+/-- info: [(some "loop", Instr.add (Operand.reg (Reg.rcx)) (Operand.imm 1))] -/
+#guard_msgs in
 #eval parse! "loop: addq $1, %rcx"
 -- Expected: [.Label "loop", .Instr { address_size := .W64, operation_size := .W64, operation := .add (.Reg (.low .rcx .W64)) (.imm 1) }]
 
 -- Test: Conditional jump
+/-- info: [(none, Instr.jcc (CondCode.nz) "loop")] -/
+#guard_msgs in
 #eval parse! "jnz loop"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .jcc .nz "loop" }]
 
 -- Test: Multi-line program
+-- TODO: fix panic
 #eval parse! "
   movq $0, %rax
 loop:
@@ -898,18 +915,30 @@ loop:
 "
 
 -- Test: Negative immediate
+/-- info: [(none, Instr.add (Operand.reg (Reg.rax)) (Operand.imm (-1)))] -/
+#guard_msgs in
 #eval parse! "addq $-1, %rax"
 
 -- Test: Hex immediate
+/-- info: [(none, Instr.mov (Operand.reg (Reg.rax)) (Operand.imm 255))] -/
+#guard_msgs in
 #eval parse! "movq $0xff, %rax"
 
 -- Test: mulx instruction
+/--
+info: [(none, Instr.mulx (Operand.reg (Reg.r10)) (Operand.reg (Reg.r9)) (Operand.reg (Reg.r8)))]
+-/
+#guard_msgs in
 #eval parse! "mulxq %r8, %r9, %r10"
 
 -- Test: xor for zeroing
+/-- info: [(none, Instr.xor (Operand.reg (Reg.rax)) (Operand.reg (Reg.rax)))] -/
+#guard_msgs in
 #eval parse! "xorq %rax, %rax"
 
 -- Test: lea with complex addressing
+/-- info: [(none, Instr.lea (Reg.rax) (Operand.mem (Reg.rbp) (some (Reg.rcx)) 4 16))] -/
+#guard_msgs in
 #eval parse! "leaq 16(%rbp, %rcx, 4), %rax"
 
 end Tests
