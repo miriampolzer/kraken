@@ -326,17 +326,17 @@ def compareMemory (expected actual : List (UInt64 × Array UInt64)) : List Strin
 
 abbrev MachineState := MachineData × Int64
 
-def startGadget: Program := [
-  .Label "__start"
-]
+def startGadget: String := "
+__start:
+"
 
 -- A gadget for testcases that fall-through the end: does nothing at run-time
 -- but allows stopping execution when it hits the __end label.
-def finishGadget: Program := [
-  .Instr ⟨ .W64, .W64, .jmp (.Rel (.Label "__end")) ⟩,
-  .Label "__end",
-  .Instr ⟨ .W64, .W64, .nop 1 ⟩
-]
+def endGadget: String := "
+  jmp __end
+__end:
+  nop
+"
 
 def finishCriterion (p: Program) (s: MachineState): Bool :=
   let end_idx := defaultLayout p ("__end", 0)
@@ -347,8 +347,7 @@ def finishCriterion (p: Program) (s: MachineState): Bool :=
     Returns the final machine state after execution. -/
 def runKraken (asmCode : String) 
     : Except String MachineState := do
-  let prog ← Parser.parse asmCode
-  let prog := startGadget ++ prog ++ finishGadget
+  let prog ← Parser.parse (startGadget ++ asmCode ++ endGadget)
   let initState: MachineState := ({}, defaultLayout prog ("__start", 0))
   eval prog initState (finishCriterion prog)
 
