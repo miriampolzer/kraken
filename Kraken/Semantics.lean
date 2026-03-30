@@ -659,6 +659,32 @@ deriving BEq, DecidableEq, Repr
 
 abbrev Program := List Directive
 
+/- Enumerate positions in a program. Two things to note:
+   - if the program does not start with a label, instructions at the beginning
+     of the program do not have a position (we could implicitly assign a label,
+     but do not currently do so).
+   - this does not enumerate all valid positions, for instance, (".foo", 0) is
+     valid but not generated -- we just pick the last label
+
+   example:
+
+   .foo:     // pc = (".foo", 0), no position generated
+   .bar:     // pc = (".bar", 0), no position generated
+     nop     // (".bar", 0)
+   .baz:
+     nop     // (".baz", 0)
+
+  Of note:
+  - The interpreter, which operates over positions, must also be able to deal
+    with multiple consecutive labels, by skipping through them (in other words,
+    the interpreter must handle (".foo", 0).
+  - Concrete layouts have further restrictions: the same Int64 must be assigned
+    to positions that denote the same layout (i.e. (".foo", 0) and (".bar", 0)
+    must map to the same Int64), and concrete layouts should also be able to
+    address *past* their label (i.e., (".foo", 1) and (".baz", 0) should map to
+    the same Int64).
+  - 
+-/
 def Program.positions' (prog : Program) (pc : Option Position) : List Position :=
   match prog, pc with
   | .Label l :: prog, _ => Program.positions' prog (l, 0)
@@ -668,12 +694,39 @@ def Program.positions' (prog : Program) (pc : Option Position) : List Position :
   | [], _ => []
 def Program.positions (prog : Program) := prog.positions' .none
 
+/- We implement a concrete layout for execution purposes that satisfies the
+   criteria above, numbering instructions in the order that they come throughout
+   the program, ignoring labels and byte arrays.
+-/
+def defaultLayout (p: Program) (pos: Position) :=
+  let (l, i) := pos
+  -- instrCount: how many `.Instr`s we have seen since the beginning
+  -- found: whether we have seen the desired label
+  let rec layout (p: Program) (instrs: Nat) (found: Bool): Int64 :=
+    match p with
+    | .Label l2 :: p => layout p instrs (l = l2 || found)
+    | .Instr _ :: p =>
+      if found then
+        .ofNat (instrs + i)
+      else
+        layout p (instrs + 1) false
+    | .ByteArray _ :: p =>
+      if found then
+        -1 -- FIXME: should this throw?
+      else
+        layout p instrs false
+    | [] =>
+      -1
+  layout p 0 false
+
 def Program.position_of_addr [Layout] [Throw α] (prog : Program) (a : Int64) (ret : Position → α) : α :=
   match prog.positions.filter (fun p => layout p = a) with
   | [p] => ret p
   | [] => throw s!"address {a} does not correspond to any known position"
   | l => throw s!"address {a} does not corresponds to multiple positions: {l}"
 
+-- AE: step seems more like something that could be « the spec » that
+-- connects these variants
 def Program.step [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=
   prog.position_of_addr s.2 (fun pc =>
@@ -695,9 +748,9 @@ def Program.straightline' [∀ w : Width, Undefined w.type α] [Undefined Status
   | (.Label l) :: suffix => Program.straightline' suffix s (l, 0) ret
   | (.Instr i) :: suffix =>
     Instr.interp i s pc
-      (fun s => Program.straightline' suffix s pc.next ret)
-      (fun l s => ret (s, label l))
-      (fun a s => ret (s, a))
+      /- next -/   (fun s => Program.straightline' suffix s pc.next ret)
+      /- branch -/ (fun l s => ret (s, label l))
+      /- jmp -/    (fun a s => ret (s, a))
   | (.ByteArray _)::_ => throw s!"Unimplemented: execution reached data block at {pc}"
   | [] => throw s!"execution outside program at {pc}"
 
@@ -707,15 +760,13 @@ def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusF
   let skipToLabel := prog.dropWhile (fun d => d != .Label pc.1)
   let skipLabels := skipToLabel.dropWhile (fun d => match d with | .Label _ => true | _ => false)
   let skipToIndex := skipLabels.drop pc.2
-  -- JP: why are we never using pc.2 here? is there a skipLabels.drop pc.2
-  -- missing?
   Program.straightline' skipToIndex s.1 pc ret)
 
 def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Except String (MachineData × Int64) :=
   if until_ s then .ok s else
   let α := Except String (MachineData × Int64)
   let : Throw α := { throw s := .error s }
-  let : Layout := { layout p := let (l, i) := p; .ofNat (prog.findIdx (fun d => d = .Label l) + i) }
+  let : Layout := { layout := defaultLayout prog }
   let : Undefined Bool α := { undefined ret := ret (hash s.1.regs % 2 != 0) }
   let : Undefined StatusFlags α := { undefined ret := let h := (hash s.1.regs).toBitVec; ret (.mk h[0] h[1] h[2] h[3] h[4] h[5]) }
   let (w : Width) : Undefined w.type α := { undefined ret := ret ((hash s.1.regs).toBitVec.setWidth w.bits) }
@@ -733,7 +784,8 @@ partial_fixpoint
     .Instr (.mk .W64 .W64 (.inc (.Reg (.low .rax .W64)))),
     .Instr (.mk .W64 .W64 .ret) ]
   let data := { dmem := .ofList [(0x100, 0x1337)], regs := {rsp := 0x100} }
-  (eval prog (data, 0) (fun (_, pc) => pc = 0x1337)).bind (fun s => .ok s.1.regs.rax)
+  let start := defaultLayout prog ("main", 0)
+  (eval prog (data, start) (fun (_, pc) => pc = 0x1337)).bind (fun s => .ok s.1.regs.rax)
 
 namespace Reg
 @[match_pattern] abbrev rax := low .rax .W64

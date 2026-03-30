@@ -326,38 +326,56 @@ def compareMemory (expected actual : List (UInt64 × Array UInt64)) : List Strin
 
 abbrev MachineState := MachineData × Int64
 
+def startGadget: Program := [
+  .Label "__start"
+]
+
 -- A gadget for testcases that fall-through the end: does nothing at run-time
 -- but allows stopping execution when it hits the __end label.
 def finishGadget: Program := [
   .Instr ⟨ .W64, .W64, .jmp (.Rel (.Label "__end")) ⟩,
-  .Label "__end"
+  .Label "__end",
+  .Instr ⟨ .W64, .W64, .nop 1 ⟩
 ]
 
--- TODO: share this definition with Semantics?
-def layout (prog: Program) (p: Position): Int64 :=
-  let (l, i) := p
-  .ofNat (prog.findIdx (fun d => d = .Label l) + i)
-
 def finishCriterion (p: Program) (s: MachineState): Bool :=
-  let end_idx := layout p ("__end", 0)
+  let end_idx := defaultLayout p ("__end", 0)
   let current_idx := s.2
   current_idx = end_idx
 
 /-- Run assembly through Kraken's semantics.
     Returns the final machine state after execution. -/
-def runKraken (asmCode : String) (initState : MachineState := ({}, 0))
+def runKraken (asmCode : String) 
     : Except String MachineState := do
   let prog ← Parser.parse asmCode
-  let prog := prog ++ finishGadget
+  let prog := startGadget ++ prog ++ finishGadget
+  let initState: MachineState := ({}, defaultLayout prog ("__start", 0))
   eval prog initState (finishCriterion prog)
 
-#eval runKraken "
+def test1 := "
+__start:
+start:
+start1:
   movq $0, %rax
 loop:
   addq $1, %rax
   cmpq $10, %rax
   jne loop
+  jmp end
+end:
+  nop
 "
+
+#eval Parser.parse test1
+
+#eval match (Parser.parse test1) with
+  | .ok test1 =>
+    -- defaultLayout test1 ("loop", 3)
+    let : Layout := { layout := defaultLayout test1 }
+    ConstExpr.interp (.sub (.Label "end") .after_current_instruction) ("loop", 3)
+  | .error _ => -1
+
+#eval runKraken test1
 
 -- ============================================================================
 -- Test Result Type

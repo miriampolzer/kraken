@@ -271,9 +271,11 @@ def parseRelRegOrMem: Parser RelRegOrMem := do
     else
       fail "expected a 64-bit register in relative addressing position"
   ) <|> (do
-    -- FIXME
+    -- FIXME: allow more cases in the syntax; for now, we only parse labels, and
+    -- assume that all jumps are relative, in that this seems to be the behavior
+    -- of the assembler
     let e ← parseLabel
-    pure (.Rel e)
+    pure (.Rel (.sub e .after_current_instruction))
   ) <|> (do
     let m ← parseMemory
     pure (.mem m)
