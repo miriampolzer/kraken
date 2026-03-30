@@ -700,8 +700,6 @@ def Program.positions (prog : Program) := prog.positions' .none
 -/
 def defaultLayout (p: Program) (pos: Position) :=
   let (l, i) := pos
-  -- instrCount: how many `.Instr`s we have seen since the beginning
-  -- found: whether we have seen the desired label
   let rec layout (p: Program) (instrs: Nat) (found: Bool): Int64 :=
     match p with
     | .Label l2 :: p => layout p instrs (l = l2 || found)
