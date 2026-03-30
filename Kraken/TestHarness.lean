@@ -349,9 +349,15 @@ def runKraken (asmCode : String) (initState : MachineState := ({}, 0))
     : Except String MachineState := do
   let prog ← Parser.parse asmCode
   let prog := prog ++ finishGadget
-  match eval prog initState (finishCriterion prog) with
-  | .some s => .ok s
-  | .none => .error "unknown error at execution"
+  eval prog initState (finishCriterion prog)
+
+#eval runKraken "
+  movq $0, %rax
+loop:
+  addq $1, %rax
+  cmpq $10, %rax
+  jne loop
+"
 
 -- ============================================================================
 -- Test Result Type

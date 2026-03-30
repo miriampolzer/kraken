@@ -706,24 +706,25 @@ def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusF
   prog.position_of_addr s.2 (fun (pc: Position) =>
   let skipToLabel := prog.dropWhile (fun d => d != .Label pc.1)
   let skipLabels := skipToLabel.dropWhile (fun d => match d with | .Label _ => true | _ => false)
+  let skipToIndex := skipLabels.drop pc.2
   -- JP: why are we never using pc.2 here? is there a skipLabels.drop pc.2
   -- missing?
-  Program.straightline' skipLabels s.1 pc ret)
+  Program.straightline' skipToIndex s.1 pc ret)
 
-def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Option (MachineData × Int64) :=
-  if until_ s then .some s else
-  let α := Option (MachineData × Int64)
-  let : Throw α := { throw _ := .none }
+def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Except String (MachineData × Int64) :=
+  if until_ s then .ok s else
+  let α := Except String (MachineData × Int64)
+  let : Throw α := { throw s := .error s }
   let : Layout := { layout p := let (l, i) := p; .ofNat (prog.findIdx (fun d => d = .Label l) + i) }
   let : Undefined Bool α := { undefined ret := ret (hash s.1.regs % 2 != 0) }
   let : Undefined StatusFlags α := { undefined ret := let h := (hash s.1.regs).toBitVec; ret (.mk h[0] h[1] h[2] h[3] h[4] h[5]) }
   let (w : Width) : Undefined w.type α := { undefined ret := ret ((hash s.1.regs).toBitVec.setWidth w.bits) }
-  match prog.straightline s Option.some with
-  | .some s => eval prog s until_
-  | .none => .none
+  match prog.straightline s Except.ok with
+  | .ok s => eval prog s until_
+  | .error s => .error s
 partial_fixpoint
 
-/-- info: some 42 -/
+/-- info: Except.ok 42 -/
 #guard_msgs in
 #eval 
   let prog := [
@@ -732,7 +733,7 @@ partial_fixpoint
     .Instr (.mk .W64 .W64 (.inc (.Reg (.low .rax .W64)))),
     .Instr (.mk .W64 .W64 .ret) ]
   let data := { dmem := .ofList [(0x100, 0x1337)], regs := {rsp := 0x100} }
-  (eval prog (data, 0) (fun (_, pc) => pc = 0x1337)).bind (fun s => .some s.1.regs.rax)
+  (eval prog (data, 0) (fun (_, pc) => pc = 0x1337)).bind (fun s => .ok s.1.regs.rax)
 
 namespace Reg
 @[match_pattern] abbrev rax := low .rax .W64
