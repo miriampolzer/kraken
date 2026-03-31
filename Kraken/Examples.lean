@@ -69,8 +69,9 @@ example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") :=
 
   simp [step1,Program.straightline]
   simp [Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label]
-  simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp]
-  simp (ground:=True)
+
+  /- simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp] -/
+  /- simp (ground:=True) -/
   sorry
   
 
