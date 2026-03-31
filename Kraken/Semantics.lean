@@ -683,6 +683,12 @@ abbrev Program := List Directive
     must map to the same Int64), and concrete layouts should also be able to
     address *past* their label (i.e., (".foo", 1) and (".baz", 0) should map to
     the same Int64).
+
+  Further notes (AE, JP): we reviewed all of the call-sites for the `layout`
+  function, and we only ever advance one past a valid program point. As in: we
+  should be able to prove a lemma that says that `layout` is only ever called
+  for positions within the span of the program source, or one past (which may
+  very well be the end).
   - 
 -/
 def Program.positions' (prog : Program) (pc : Option Position) : List Position :=
@@ -700,6 +706,8 @@ def Program.positions (prog : Program) := prog.positions' .none
 -/
 def defaultLayout (p: Program) (pos: Position) :=
   let (l, i) := pos
+  -- TODO: write a helper called nInstrsPast to be used instead of drop pc.2
+  -- below.
   let rec layout (p: Program) (instrs: Nat) (found: Bool): Int64 :=
     match p with
     | .Label l2 :: p => layout p instrs (l = l2 || found)
@@ -746,11 +754,11 @@ def Program.straightline' [∀ w : Width, Undefined w.type α] [Undefined Status
   | (.Label l) :: suffix => Program.straightline' suffix s (l, 0) ret
   | (.Instr i) :: suffix =>
     Instr.interp i s pc
-      /- next -/   (fun s => Program.straightline' suffix s pc.next ret)
-      /- branch -/ (fun l s => ret (s, label l))
-      /- jmp -/    (fun a s => ret (s, a))
+      (next := fun s => Program.straightline' suffix s pc.next ret)
+      (branch := fun l s => ret (s, label l))
+      (jmp := fun a s => ret (s, a))
   | (.ByteArray _)::_ => throw s!"Unimplemented: execution reached data block at {pc}"
-  | [] => throw s!"execution outside program at {pc}"
+  | [] => ret (s, layout pc)
 
 def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=

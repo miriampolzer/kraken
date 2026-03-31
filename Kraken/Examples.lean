@@ -24,8 +24,10 @@ example: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
   simp [step1,p1,Program.straightline,_root_.default]
   simp [Program.position_of_addr,Program.positions,Program.positions',Layout.layout,layout,List.filter,Position.Label]
   simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,Program.straightline']
-  simp [Instr.interp,Operation.interp,Operand.interp]
+  simp [Instr.interp,Operation.interp,Operand.interp,MachineData.set]
+  simp [MachineData.setReg,Reg64s.set,Reg64s.set64,ConstExpr.interp]
   sorry
+  
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
