@@ -817,35 +817,23 @@ def parseLine : Parser (List Directive) := do
     | none,   some i => pure [i]
     | none,   none   => pure []
 
-/-- Skip to the end of the current line. -/
-def skipToEndOfLine : Parser Unit := do
-  let _ ← many (satisfy fun c => c != '\n')
-  let _ ← (pchar '\n' *> pure ()) <|> pure ()
-
-/-- Parse multiple lines into a Program. -/
-partial def parseProgramAux (acc : Program) : Parser Program := do
-  skipHWs
-  let done ← (eof *> pure true) <|> pure false
-  if done then
-    pure acc.reverse
-  else
-    let directives ← parseLine
-    skipToEndOfLine
-    parseProgramAux (directives.reverse ++ acc)
-
-def parseProgram : Parser Program := parseProgramAux []
-
 -- ============================================================================
 -- Public API
 -- ============================================================================
 
-/-- Parse an assembly string into a Program.
-    Returns an error message on failure. -/
-def parse (input : String) : Except String Program :=
-  match parseProgram ⟨ input, input.startPos ⟩ with
-  | .success _ prog => .ok prog
-  | .error _ .eof => .error "unexpected end-of-file"
+instance : Coe (ParseResult (List T1) (Sigma String.Pos)) (Except String (List T1)) where coe :=
+  fun r => match r with
+  | .success _ v => .ok v
+  | .error _ .eof => .ok []
   | .error _ (.other msg) => .error msg
+
+def parse (input: String): Except String Program := do
+  let lines: List (Except _ _) := (input.splitOn "\n").map (fun x => parseLine ⟨ x, x.startPos ⟩)
+  let lines ← lines.foldlM (fun acc line => do
+    let line ← line
+    pure (line :: acc)
+  ) []
+  pure lines.reverse.flatten
 
 /-- Parse an assembly string, panicking on failure (for use in #eval). -/
 def parse! (input : String) : Program :=

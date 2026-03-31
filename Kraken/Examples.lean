@@ -52,14 +52,14 @@ example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
   
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
--- Example 2: fine-grained tactics to step through the goal without un-necessary
--- steps, and relying only on low-level tactics
-
+-- Stepping demo. Ideally, this demo should be without the first .mov
 def p2: Program := parse! "
 start:
-    .mov $1, %rax
-    .jz start
-    .mov $2, %rax
+    mov $1, %rax
+    xor %rax %rax
+    jnz start
+
+    mov $2, %rax
 "
 
 -- Example 2: stepping through both straightline and control instructions
@@ -79,30 +79,26 @@ example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") :=
   apply eventually.done
   simp
 
-def p3: Program := [
-  -- (.none,         .mov (.reg .rbx) (.imm 4)),                -- rbx: loop counter = 4
-  (.none,         .mov (.reg .rdx) (.imm 2)),                -- rdx: current result = 2
-  (.some "start", .sub (.reg .rbx) (.imm 0)),                -- TEST: zf = (rbx == 0)
-  (.none        , .jcc .z "end"),                                  -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
-  (.none        , .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)),  -- BODY: rdx := rdx * rdx
-  (.none,         .sub (.reg .rbx) (.imm 1)),                -- rbx -= 1
-  (.none,         .jmp "start"),                               -- go back to test & loop body
-  (.some "end",   .mov (.reg .rax) (.imm 0)),                -- meaningless -- just want the label to be well-defined
-  -- result is 2^16, in rdx
-]
+def p3: Program := parse! "
+init:
+  mov $2 %rdx             # rdx: current result = 2
+start:
+  sub $0 %rbx             # TEST: zf = (rbx == 0)
+  jz _end                 # end loop if rbx == 0 (a.k.a. « while rbx >= 0 »)
+  .mulx %rdx %rdx %rax    # BODY: rdx := rdx * rdx
+  sub 1 %rbx              # rbx -= 1
+  jmp start               # go back to test & loop body
+_end:
+  nop
+"
 
--- Need to do something for when we have reached the end of the instruction list
--- maybe a special state! Right now this returns `none` because we eventually
--- hit the final instruction and then rip is out of bounds.
-#eval (eval p3 {})
-
-def p3_spec (s: MachineState): Nat := 2^(2^s.regs.rbx.toNat)
+def p3_spec (s: MachineState): Nat := 2^(2^s.1.regs.rbx.toNat)
 
 set_option maxHeartbeats 4000000 in
-theorem p3_correct (initial: MachineState):
+theorem p3_correct [Layout] (initial: MachineState):
     p3_spec initial < 2^64 →
-    initial.rip = 0 →
-    eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial :=
+    (layout ("init", 0) = initial.2) →
+    eventually p3 (fun s => s.1.regs.rdx.toNat == p3_spec initial ∧ s.1.regs.rax == 0) initial :=
   by
   sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers)
   /-
