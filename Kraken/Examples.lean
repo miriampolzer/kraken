@@ -55,18 +55,17 @@ example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
 -- steps, and relying only on low-level tactics
 
-instance : Coe Nat ConstExpr where coe := fun (n: Nat) => ConstExpr.Int64 (Int64.ofNat n)
-
-def p2: Program := [
-  .Label "start",
-  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm 1) ⟩,
-  .Instr ⟨ .W64, .W64, .jcc .z "start" ⟩,
-  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm 2) ⟩,
-]
+def p2: Program := parse! "
+start:
+    .mov $1, %rax
+    .jz start
+    .mov $2, %rax
+"
 
 -- Example 2: stepping through both straightline and control instructions
 example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
   simp [p2,_root_.default,parse!,parse,parseProgram,String.startPos,parseProgramAux]
+  simp (ground := True)
 
   apply step_cps
   step1
