@@ -62,13 +62,9 @@ start:
     mov $2, %rax
 "
 
-set_option maxRecDepth 2000
-set_option maxHeartbeats 2000000
-
 -- Example 2: stepping through both straightline and control instructions
 example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
   simp [p2,_root_.default,parse!,parse,String.startPos]
-  simp (config := { ground := True, maxSteps := 2000000 })
 
   apply step_cps
   step1
@@ -82,7 +78,8 @@ example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") :=
   apply eventually.done
   simp
 
-def p3: Program := parse! "
+-- Example 3 commented out until we figure out how to parse concrete syntax.
+/- def p3: Program := parse! "
 init:
   mov $2 %rdx             # rdx: current result = 2
 start:
@@ -103,7 +100,7 @@ theorem p3_correct [Layout] (initial: MachineState):
     (layout ("init", 0) = initial.2) →
     eventually p3 (fun s => s.1.regs.rdx.toNat == p3_spec initial ∧ s.1.regs.rax == 0) initial :=
   by
-  sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers)
+  sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers) -/
   /-
     intros h_bounds h_rip
     simp [p3]

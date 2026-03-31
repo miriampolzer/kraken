@@ -506,24 +506,10 @@ def Operation.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags
     undefined (fun af =>
     let status := .from_result v { cf := false, af, of := false}
     next { s with status})))
-  | .and dst src =>
+  | .and dst src | .or dst src | .xor dst src =>
     dst.interp s p (fun a =>
     src.interp s p (fun b =>
-    let v := a &&& b
-    undefined (fun af =>
-    let status := .from_result v { cf := false, of := false, af }
-    { s with status }.set dst v p next)))
-  | .or dst src =>
-    dst.interp s p (fun a =>
-    src.interp s p (fun b =>
-    let v := a ||| b
-    undefined (fun af =>
-    let status := .from_result v { cf := false, of := false, af }
-    { s with status }.set dst v p next)))
-  | .xor dst src =>
-    dst.interp s p (fun a =>
-    src.interp s p (fun b =>
-    let v := a ^^^ b
+    let v := match i with | .and _ _ => a &&& b | .or _ _ => a ||| b | _ => a ^^^ b
     undefined (fun af =>
     let status := .from_result v { cf := false, of := false, af }
     { s with status }.set dst v p next)))
