@@ -62,10 +62,13 @@ start:
     mov $2, %rax
 "
 
+set_option maxRecDepth 2000
+set_option maxHeartbeats 2000000
+
 -- Example 2: stepping through both straightline and control instructions
 example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
-  simp [p2,_root_.default,parse!,parse,parseProgram,String.startPos,parseProgramAux]
-  simp (ground := True)
+  simp [p2,_root_.default,parse!,parse,String.startPos]
+  simp (config := { ground := True, maxSteps := 2000000 })
 
   apply step_cps
   step1
