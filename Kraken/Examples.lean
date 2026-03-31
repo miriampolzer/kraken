@@ -53,30 +53,37 @@ example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
 -- Stepping demo. Ideally, this demo should be without the first .mov
-def p2: Program := parse! "
-start:
-    mov $1, %rax
-    xor %rax %rax
-    jnz start
-
-    mov $2, %rax
-"
+def p2: Program := [
+  .Label "start",
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm (.Int64 1)) ⟩,
+  .Instr ⟨ .W64, .W64, .xor Reg.rax Reg.rax ⟩,
+  .Instr ⟨ .W64, .W64, .jcc .nz "start" ⟩,
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm (.Int64 2)) ⟩,
+]
 
 -- Example 2: stepping through both straightline and control instructions
 example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
-  simp [p2,_root_.default,parse!,parse,String.startPos]
+  simp [p2,_root_.default]
 
   apply step_cps
-  step1
 
-  apply step_cps
-  step1
+  simp [step1,Program.straightline]
+  simp [Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label]
+  simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp]
+  simp (ground:=True)
+  sorry
+  
 
-  apply step_cps
-  step_one
+  /- step1 -/
 
-  apply eventually.done
-  simp
+  /- apply step_cps -/
+  /- step1 -/
+
+  /- apply step_cps -/
+  /- step_one -/
+
+  /- apply eventually.done -/
+  /- simp -/
 
 -- Example 3 commented out until we figure out how to parse concrete syntax.
 /- def p3: Program := parse! "
