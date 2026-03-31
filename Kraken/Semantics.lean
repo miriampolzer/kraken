@@ -706,8 +706,6 @@ def Program.positions (prog : Program) := prog.positions' .none
 -/
 def defaultLayout (p: Program) (pos: Position) :=
   let (l, i) := pos
-  -- TODO: write a helper called nInstrsPast to be used instead of drop pc.2
-  -- below.
   let rec layout (p: Program) (instrs: Nat) (found: Bool): Int64 :=
     match p with
     | .Label l2 :: p => layout p instrs (l = l2 || found)
@@ -731,22 +729,39 @@ def Program.position_of_addr [Layout] [Throw α] (prog : Program) (a : Int64) (r
   | [] => throw s!"address {a} does not correspond to any known position"
   | l => throw s!"address {a} does not corresponds to multiple positions: {l}"
 
+def dropInstrs (p: Program) (n: Nat): Option Program :=
+  match p with
+  | [] =>
+    if n = 0 then
+      .some []
+    else
+      .none
+  | .Instr _ :: ps =>
+    if n = 0 then
+      p
+    else
+      dropInstrs ps (n - 1)
+  | .Label _ :: ps =>
+    dropInstrs ps n
+  | .ByteArray _ :: _ =>
+    .none
+
 -- AE: step seems more like something that could be « the spec » that
 -- connects these variants
 def Program.step [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=
   prog.position_of_addr s.2 (fun pc =>
   let skipToLabel := prog.dropWhile (fun d => d != .Label pc.1)
-  let skipLabels := skipToLabel.dropWhile (fun d => match d with | .Label _ => true | _ => false)
-  match skipLabels[pc.2]? with
-  | .some (.Label _) => throw "unreachable: got label after skipping labels"
-  | .some (.Instr i) =>
+  match dropInstrs skipToLabel pc.2 with
+  | .some (.Label _ :: _)
+  | .some (.ByteArray _ :: _) => throw s!"unreachable -- dropInstrs only returns .Instr"
+  | .some (.Instr i :: _) =>
     Instr.interp i s.1 pc
       (fun s => ret (s, layout pc.next))
       (fun l s => ret (s, label l,))
       (fun a s => ret (s, a))
-  | .some (.ByteArray _) => throw s!"Unimplemented: execution reached data block at {pc}"
-  | .none => throw s!"execution outside program at {pc}")
+  | .some [] => throw s!"execution outside program at {pc}"
+  | .none => throw s!"Unimplemented: execution reached data block at {pc}")
 
 def Program.straightline' [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (suffix : List Directive) (s : MachineData) (pc : Position) (ret : MachineData × Int64 → α) : α :=
@@ -764,9 +779,9 @@ def Program.straightline [∀ w : Width, Undefined w.type α] [Undefined StatusF
   (prog : Program) (s : MachineData × Int64) (ret : MachineData × Int64 → α) : α :=
   prog.position_of_addr s.2 (fun (pc: Position) =>
   let skipToLabel := prog.dropWhile (fun d => d != .Label pc.1)
-  let skipLabels := skipToLabel.dropWhile (fun d => match d with | .Label _ => true | _ => false)
-  let skipToIndex := skipLabels.drop pc.2
-  Program.straightline' skipToIndex s.1 pc ret)
+  match dropInstrs skipToLabel pc.2 with
+  | .some skipLabels => Program.straightline' skipLabels s.1 pc ret
+  | .none => throw s!"position {pc} out of bounds")
 
 def eval (prog : Program) (s : MachineData × Int64) (until_ : MachineData × Int64 → Bool) : Except String (MachineData × Int64) :=
   if until_ s then .ok s else

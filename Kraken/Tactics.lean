@@ -19,20 +19,13 @@ abbrev Post := MachineState → Prop
 instance : Throw Prop where
   throw _ := False
 
--- At proof-time, we can only reason about an unknown layout.
-axiom runTimeLayout (p: Position): Int64
-
-noncomputable
-instance : Layout where
-  layout := runTimeLayout
-
 instance (T: Type): Undefined T Prop where
   undefined ret := ∀ (v: T), ret v
 
-def step1 (p: Program) (s: MachineState) (post: Post) :=
+def step1 [Layout] (p: Program) (s: MachineState) (post: Post) :=
   Program.straightline p s post
 
-inductive eventually (prog: Program) (p: MachineState → Prop): MachineState -> Prop
+inductive eventually [Layout] (prog: Program) (p: MachineState → Prop): MachineState -> Prop
   | done (initial: MachineState):
       p initial →
       eventually _ p initial
@@ -44,7 +37,7 @@ inductive eventually (prog: Program) (p: MachineState → Prop): MachineState ->
 
 -- THEOREMS
 
-theorem step_cps {p : Program} (post: Post) (initial: MachineState):
+theorem step_cps {p : Program} [Layout] (post: Post) (initial: MachineState):
   step1 p initial (fun mid => eventually p post mid) → eventually p post initial :=
   by
     intro
@@ -52,7 +45,7 @@ theorem step_cps {p : Program} (post: Post) (initial: MachineState):
     <;> try assumption
     grind
 
-theorem eventually_trans (program: Program) (p q: Post) (initial: MachineState)
+theorem eventually_trans [Layout] (program: Program) (p q: Post) (initial: MachineState)
   (e: eventually program p initial)
   (h: forall s, p s → eventually program q s):
     eventually program q initial
@@ -64,7 +57,7 @@ theorem eventually_trans (program: Program) (p q: Post) (initial: MachineState)
         apply eventually.step
         <;> assumption -- Q: why does `grind` not work here?
 
-theorem eventually_weaken (program: Program) (p q: Post)
+theorem eventually_weaken [Layout] (program: Program) (p q: Post)
   (h: forall s, p s → q s):
     eventually program p initial → eventually program q initial
   := by
@@ -77,7 +70,7 @@ theorem eventually_weaken (program: Program) (p q: Post)
       grind
 
 -- A loop down to 0
-theorem reg_dec_loop (prog: Program) (post: Post) (initial: MachineState) (invariant: Nat → Post) (n: Nat):
+theorem reg_dec_loop [Layout] (prog: Program) (post: Post) (initial: MachineState) (invariant: Nat → Post) (n: Nat):
   -- if:
   -- invariant holds before entering the loop
   invariant n initial ∧
@@ -144,8 +137,10 @@ macro_rules
   | `(tactic|step_one) =>
   `(tactic|
     simp [
-      step1,Instr.is_ctrl,eval1,fetch,
-      -- works for calls to strt1
-      strt1,eval_operand,eval_reg_or_mem,set_reg,set_reg_or_mem,effective_addr,eval_imm,sub_with_borrow,add_with_carry,sub_overflow,add_overflow,MachineState.setReg,next,Registers.set,pure,bind,next,MachineState.getReg,Registers.get,
-      -- or calls to ctrl
-      ctrl,lookup,List.findIdx?,List.findIdx?.go,pure,bind,jump_if,next] <;> try native_decide)
+      step1,Program.straightline,
+      Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label,
+      List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp];
+    simp (ground:=True);
+    simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp];
+    simp (ground:=True)
+       <;> try native_decide)

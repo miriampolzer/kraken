@@ -9,9 +9,12 @@ For tactics, see Kraken/Tactics.lean.
 -/
 
 import Kraken.Tactics
+import Kraken.Parser
+
+open Kraken.Parser
 
 noncomputable
-def default (start: Label): MachineState := ({}, layout start)
+def default [Layout] (start: Label): MachineState := ({}, layout start)
 
 -- Example 1: single step of execution
 def p1: Program := [
@@ -19,35 +22,57 @@ def p1: Program := [
   .Instr ⟨ .W64, .W64, .mov (Reg.rax) (.imm (.Int64 1)) ⟩
 ]
 
--- OLD: doing things with a heavy-handed `simp`
-example: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
-  simp [step1,p1,Program.straightline,_root_.default]
-  simp [Program.position_of_addr,Program.positions,Program.positions',Layout.layout,layout,List.filter,Position.Label]
-  simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,Program.straightline']
-  simp [Instr.interp,Operation.interp,Operand.interp,MachineData.set]
-  simp [MachineData.setReg,Reg64s.set,Reg64s.set64,ConstExpr.interp]
-  sorry
+syntax "step1" : tactic
+macro_rules
+  | `(tactic|step1) =>
+  `(tactic|
+    simp [
+      step1,Program.straightline,
+      Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label,
+      List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp];
+    simp (ground:=True);
+    simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp];
+    simp (ground:=True)
+       <;> try native_decide)
+
+-- Super-simple example to debug tactics
+example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
+  simp [p1,_root_.default]
+  simp [step1,Program.straightline]
+  simp [Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label]
+  simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp]
+  simp (ground:=True)
+  simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp]
+  simp (ground:=True)
+  simp
+  
+  /- simp [Instr.interp,Operation.interp,Operand.interp,MachineData.set] -/
+  /- simp [MachineData.setReg,Reg64s.set,Reg64s.set64,ConstExpr.interp] -/
+  /- simp [Width.bits] -/
   
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
 -- Example 2: fine-grained tactics to step through the goal without un-necessary
 -- steps, and relying only on low-level tactics
 
+instance : Coe Nat ConstExpr where coe := fun (n: Nat) => ConstExpr.Int64 (Int64.ofNat n)
+
 def p2: Program := [
-  (.some "start", .mov (.reg .rax) (.imm 1)),
-  (.none,         .jcc .z "start"),
-  (.none,         .mov (.reg .rax) (.imm 2)),
+  .Label "start",
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm 1) ⟩,
+  .Instr ⟨ .W64, .W64, .jcc .z "start" ⟩,
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm 2) ⟩,
 ]
 
 -- Example 2: stepping through both straightline and control instructions
-example: eventually p2 (fun s => s.regs.rax = 2) {} := by
-  simp [p2]
+example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
+  simp [p2,_root_.default,parse!,parse,parseProgram,String.startPos,parseProgramAux]
 
   apply step_cps
-  step_one
+  step1
 
   apply step_cps
-  step_one
+  step1
 
   apply step_cps
   step_one
