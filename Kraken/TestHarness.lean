@@ -60,7 +60,7 @@ def genCaptureDataRegs : String :=
 def genCaptureDataMem (regions : List MemRegion) : String :=
   if regions.isEmpty then ""
   else
-    let regionData := regions.enum.map fun (i, r) =>
+    let regionData := regions.mapIdx fun i r =>
       s!"# Memory region {i}: base={r.base}, size={r.size} words\n" ++
       s!"_kraken_mem_region_{i}_base: .quad {r.base.toNat}\n" ++
       s!"_kraken_mem_region_{i}_size: .quad {r.size}\n" ++
@@ -101,7 +101,7 @@ def genSaveRegisters : String :=
 def genCopyMemoryRegions (regions : List MemRegion) : String :=
   if regions.isEmpty then ""
   else
-    let copies := regions.enum.map fun (i, r) =>
+    let copies := regions.mapIdx fun i r =>
       s!"    # Copy memory region {i}\n" ++
       s!"    movq _kraken_mem_region_{i}_base(%rip), %rsi  # source = base\n" ++
       s!"    leaq _kraken_mem_region_{i}_data(%rip), %rdi  # dest = buffer\n" ++
@@ -188,6 +188,7 @@ def makeTestProgram (instructions : String) (memRegions : List MemRegion := []) 
 def extractUInt64 (data : ByteArray) (offset : Nat) : UInt64 :=
   if offset + 7 >= data.size then 0
   else
+    -- TODO: foldl?
     let b0 := data.get! offset
     let b1 := data.get! (offset + 1)
     let b2 := data.get! (offset + 2)
@@ -200,10 +201,10 @@ def extractUInt64 (data : ByteArray) (offset : Nat) : UInt64 :=
     (b4.toUInt64 <<< 32) + (b5.toUInt64 <<< 40) + (b6.toUInt64 <<< 48) + (b7.toUInt64 <<< 56)
 
 /-- Parse final register/flag state from binary output (first 136 bytes). -/
-def parseRegisterState (data : ByteArray) : Option (Registers × Flags) :=
+def parseRegisterState (data : ByteArray) : Option (Reg64s × StatusFlags) :=
   if data.size < 136 then none
   else
-    let regs : Registers := {
+    let regs : Reg64s := {
       rax := extractUInt64 data 0,
       rbx := extractUInt64 data 8,
       rcx := extractUInt64 data 16,
@@ -222,10 +223,14 @@ def parseRegisterState (data : ByteArray) : Option (Registers × Flags) :=
       r15 := extractUInt64 data 120
     }
     let flagsVal := extractUInt64 data 128
-    let flags : Flags := {
-      zf := (flagsVal &&& 0x40) != 0,  -- Bit 6: ZF
-      cf := (flagsVal &&& 0x01) != 0,  -- Bit 0: CF
-      of := (flagsVal &&& 0x800) != 0  -- Bit 11: OF
+    let flags : StatusFlags := {
+      -- https://en.wikipedia.org/wiki/FLAGS_register
+      cf := (flagsVal &&& 0x01) != 0,
+      pf := (flagsVal &&& 0x04) != 0,
+      af := (flagsVal &&& 0x10) != 0,
+      zf := (flagsVal &&& 0x40) != 0,
+      sf := (flagsVal &&& 0x80) != 0,
+      of := (flagsVal &&& 0x800) != 0,
     }
     some (regs, flags)
 
@@ -259,7 +264,7 @@ where
 
 /-- Compare two register states, returning list of differences.
     Skips rsp since Kraken initializes it to 0 but real execution has a stack. -/
-def compareRegisters (expected actual : Registers) : List String :=
+def compareRegisters (expected actual : Reg64s) : List String :=
   let checks := [
     ("rax", expected.rax, actual.rax), ("rbx", expected.rbx, actual.rbx),
     ("rcx", expected.rcx, actual.rcx), ("rdx", expected.rdx, actual.rdx),
@@ -277,10 +282,13 @@ def compareRegisters (expected actual : Registers) : List String :=
     else none
 
 /-- Compare two flag states, returning list of differences. -/
-def compareFlags (expected actual : Flags) : List String :=
+def compareFlags (expected actual : StatusFlags) : List String :=
   let checks := [
-    ("ZF", expected.zf, actual.zf),
     ("CF", expected.cf, actual.cf),
+    ("PF", expected.zf, actual.pf),
+    ("AF", expected.zf, actual.af),
+    ("ZF", expected.zf, actual.zf),
+    ("SF", expected.zf, actual.sf),
     ("OF", expected.of, actual.of)
   ]
   checks.filterMap fun (name, exp, act) =>
@@ -288,7 +296,7 @@ def compareFlags (expected actual : Flags) : List String :=
     else none
 
 /-- Extract memory values from Kraken's sparse heap for comparison. -/
-def extractKrakenMemory (heap : Heap) (regions : List MemRegion)
+def extractKrakenMemory (heap : DataMem) (regions : List MemRegion)
     : List (UInt64 × Array UInt64) :=
   regions.map fun r =>
     let values := Array.range r.size |>.map fun i =>
@@ -302,11 +310,13 @@ def compareMemory (expected actual : List (UInt64 × Array UInt64)) : List Strin
   let pairs := expected.zip actual
   pairs.foldl (fun acc ((expBase, expVals), (actBase, actVals)) =>
     if expBase != actBase then
+      -- TODO: computational complexity?
       acc ++ [s!"memory base mismatch: expected {expBase}, got {actBase}"]
     else
-      let valDiffs := expVals.toList.zip actVals.toList |>.enum.filterMap fun (i, (e, a)) =>
+      let valDiffs := (List.zip expVals.toList actVals.toList).mapIdx fun i (e, a) =>
         if e != a then some s!"mem[{expBase}+{i*8}]: expected {e}, got {a}"
         else none
+      let valDiffs := valDiffs.filterMap id
       acc ++ valDiffs
   ) []
 
@@ -314,22 +324,57 @@ def compareMemory (expected actual : List (UInt64 × Array UInt64)) : List Strin
 -- Kraken Execution
 -- ============================================================================
 
+abbrev MachineState := MachineData × Int64
+
+def startGadget: String := "
+__start:
+"
+
+-- A gadget for testcases that fall-through the end: does nothing at run-time
+-- but allows stopping execution when it hits the __end label.
+def endGadget: String := "
+  jmp __end
+__end:
+  nop
+"
+
+def finishCriterion (p: Program) (s: MachineState): Bool :=
+  let end_idx := defaultLayout p ("__end", 0)
+  let current_idx := s.2
+  current_idx = end_idx
+
 /-- Run assembly through Kraken's semantics.
     Returns the final machine state after execution. -/
-def runKraken (asmCode : String) (initState : MachineState := {})
+def runKraken (asmCode : String) 
     : Except String MachineState := do
-  let prog ← Parser.parse asmCode
-  runBounded prog initState 10000
-where
-  runBounded (prog : Program) (s : MachineState) (fuel : Nat) : Except String MachineState :=
-    match fuel with
-    | 0 => .error "execution exceeded step limit"
-    | fuel' + 1 =>
-      if s.rip >= prog.length then .ok s
-      else
-        match eval1 (m := { throw := Except.error }) prog s (fun s => .ok s) with
-        | .ok s' => runBounded prog s' fuel'
-        | .error e => .error e
+  let prog ← Parser.parse (startGadget ++ asmCode ++ endGadget)
+  let initState: MachineState := ({}, defaultLayout prog ("__start", 0))
+  eval prog initState (finishCriterion prog)
+
+def test1 := "
+__start:
+start:
+start1:
+  movq $0, %rax
+loop:
+  addq $1, %rax
+  cmpq $10, %rax
+  jne loop
+  jmp end
+end:
+  nop
+"
+
+#eval Parser.parse test1
+
+#eval match (Parser.parse test1) with
+  | .ok test1 =>
+    -- defaultLayout test1 ("loop", 3)
+    let : Layout := { layout := defaultLayout test1 }
+    ConstExpr.interp (.sub (.Label "end") .after_current_instruction) ("loop", 3)
+  | .error _ => -1
+
+#eval runKraken test1
 
 -- ============================================================================
 -- Test Result Type
@@ -343,23 +388,23 @@ inductive TestResult
   deriving Repr
 
 /-- Compare Kraken's expected final state with actual execution result (registers only). -/
-def compareStates (krakenState : MachineState) (actualRegs : Registers) (actualFlags : Flags)
+def compareStates (krakenState : MachineState) (actualRegs : Reg64s) (actualFlags : StatusFlags)
     : TestResult :=
-  let regDiffs := compareRegisters krakenState.regs actualRegs
-  let flagDiffs := compareFlags krakenState.flags actualFlags
+  let regDiffs := compareRegisters krakenState.1.regs actualRegs
+  let flagDiffs := compareFlags krakenState.1.status actualFlags
   let allDiffs := regDiffs ++ flagDiffs
   if allDiffs.isEmpty then .success
   else .mismatch allDiffs
 
 /-- Compare Kraken's expected final state with actual execution (including memory). -/
 def compareStatesWithMem (krakenState : MachineState)
-    (actualRegs : Registers) (actualFlags : Flags)
+    (actualRegs : Reg64s) (actualFlags : StatusFlags)
     (actualMem : List (UInt64 × Array UInt64))
     (memRegions : List MemRegion)
     : TestResult :=
-  let regDiffs := compareRegisters krakenState.regs actualRegs
-  let flagDiffs := compareFlags krakenState.flags actualFlags
-  let expectedMem := extractKrakenMemory krakenState.heap memRegions
+  let regDiffs := compareRegisters krakenState.1.regs actualRegs
+  let flagDiffs := compareFlags krakenState.1.status actualFlags
+  let expectedMem := extractKrakenMemory krakenState.1.dmem memRegions
   let memDiffs := compareMemory expectedMem actualMem
   let allDiffs := regDiffs ++ flagDiffs ++ memDiffs
   if allDiffs.isEmpty then .success

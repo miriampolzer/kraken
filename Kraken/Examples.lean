@@ -9,67 +9,97 @@ For tactics, see Kraken/Tactics.lean.
 -/
 
 import Kraken.Tactics
+import Kraken.Parser
+
+open Kraken.Parser
+
+noncomputable
+def default [Layout] (start: Label): MachineState := ({}, layout start)
 
 -- Example 1: single step of execution
 def p1: Program := [
-  (.none, .mov (Reg.rax) (.imm 1)),
+  .Label "start",
+  .Instr ⟨ .W64, .W64, .mov (Reg.rax) (.imm (.Int64 1)) ⟩
 ]
 
--- OLD: doing things with a heavy-handed `simp`
-example: step1 p1 {} (fun s => s.regs.rax = 1) := by
-  simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set]
+syntax "step1" : tactic
+macro_rules
+  | `(tactic|step1) =>
+  `(tactic|
+    simp [
+      step1,Program.straightline,
+      Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label,
+      List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp,
+      RegOrMem.interp,undefined,Undefined.undefined];
+    simp (ground:=True);
+    simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp];
+    simp (ground:=True)
+       <;> try native_decide)
 
--- Example 2: fine-grained tactics to step through the goal without un-necessary
--- steps, and relying only on low-level tactics
+-- Super-simple example to debug tactics
+example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
+  simp [p1,_root_.default]
+  simp [step1,Program.straightline]
+  simp [Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label]
+  simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp]
+  simp (ground:=True)
+  simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp]
+  simp (ground:=True)
+  simp
+  
+  /- simp [Instr.interp,Operation.interp,Operand.interp,MachineData.set] -/
+  /- simp [MachineData.setReg,Reg64s.set,Reg64s.set64,ConstExpr.interp] -/
+  /- simp [Width.bits] -/
+  
+  /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
+-- Stepping demo. Ideally, this demo should be without the first .mov
 def p2: Program := [
-  (.some "start", .mov (.reg .rax) (.imm 1)),
-  (.none,         .jcc .z "start"),
-  (.none,         .mov (.reg .rax) (.imm 2)),
+  .Label "start",
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm (.Int64 1)) ⟩,
+  .Instr ⟨ .W64, .W64, .xor Reg.rax Reg.rax ⟩,
+  .Instr ⟨ .W64, .W64, .jcc .nz "start" ⟩,
+  .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm (.Int64 2)) ⟩,
 ]
 
 -- Example 2: stepping through both straightline and control instructions
-example: eventually p2 (fun s => s.regs.rax = 2) {} := by
-  simp [p2]
+example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
+  simp [p2,_root_.default]
 
+  -- FIXME: this is too aggressive, the (ground := True) in simp reduces many
+  -- steps at once
   apply step_cps
-  step_one
 
-  apply step_cps
-  step_one
+  step1
+  constructor
+  . apply eventually.done
+    simp
+  . apply eventually.done
+    simp
+ 
+-- Example 3 commented out until we figure out how to parse concrete syntax.
+/- def p3: Program := parse! "
+init:
+  mov $2 %rdx             # rdx: current result = 2
+start:
+  sub $0 %rbx             # TEST: zf = (rbx == 0)
+  jz _end                 # end loop if rbx == 0 (a.k.a. « while rbx >= 0 »)
+  .mulx %rdx %rdx %rax    # BODY: rdx := rdx * rdx
+  sub 1 %rbx              # rbx -= 1
+  jmp start               # go back to test & loop body
+_end:
+  nop
+"
 
-  apply step_cps
-  step_one
-
-  apply eventually.done
-  simp
-
-def p3: Program := [
-  -- (.none,         .mov (.reg .rbx) (.imm 4)),                -- rbx: loop counter = 4
-  (.none,         .mov (.reg .rdx) (.imm 2)),                -- rdx: current result = 2
-  (.some "start", .sub (.reg .rbx) (.imm 0)),                -- TEST: zf = (rbx == 0)
-  (.none        , .jcc .z "end"),                                  -- end loop if rbx == 0 (a.k.a. "while rbx >= 0")
-  (.none        , .mulx (.reg .rax) (.reg .rdx) (.reg .rdx)),  -- BODY: rdx := rdx * rdx
-  (.none,         .sub (.reg .rbx) (.imm 1)),                -- rbx -= 1
-  (.none,         .jmp "start"),                               -- go back to test & loop body
-  (.some "end",   .mov (.reg .rax) (.imm 0)),                -- meaningless -- just want the label to be well-defined
-  -- result is 2^16, in rdx
-]
-
--- Need to do something for when we have reached the end of the instruction list
--- maybe a special state! Right now this returns `none` because we eventually
--- hit the final instruction and then rip is out of bounds.
-#eval (eval p3 {})
-
-def p3_spec (s: MachineState): Nat := 2^(2^s.regs.rbx.toNat)
+def p3_spec (s: MachineState): Nat := 2^(2^s.1.regs.rbx.toNat)
 
 set_option maxHeartbeats 4000000 in
-theorem p3_correct (initial: MachineState):
+theorem p3_correct [Layout] (initial: MachineState):
     p3_spec initial < 2^64 →
-    initial.rip = 0 →
-    eventually p3 (fun s => s.regs.rdx.toNat == p3_spec initial ∧ s.regs.rax == 0) initial :=
+    (layout ("init", 0) = initial.2) →
+    eventually p3 (fun s => s.1.regs.rdx.toNat == p3_spec initial ∧ s.1.regs.rax == 0) initial :=
   by
-  sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers)
+  sorry -- simp times out due to larger Reg enum (64 constructors with aliased registers) -/
   /-
     intros h_bounds h_rip
     simp [p3]
