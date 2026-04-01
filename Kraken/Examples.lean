@@ -29,7 +29,8 @@ macro_rules
     simp [
       step1,Program.straightline,
       Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label,
-      List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp];
+      List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp,
+      RegOrMem.interp,undefined,Undefined.undefined];
     simp (ground:=True);
     simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp];
     simp (ground:=True)
@@ -65,27 +66,17 @@ def p2: Program := [
 example [Layout]: eventually p2 (fun s => s.1.regs.rax = 2) (default "start") := by
   simp [p2,_root_.default]
 
+  -- FIXME: this is too aggressive, the (ground := True) in simp reduces many
+  -- steps at once
   apply step_cps
 
-  simp [step1,Program.straightline]
-  simp [Program.position_of_addr,Program.positions,Program.positions',layout,List.filter,Position.Label]
-
-  /- simp [List.dropWhile,bne,BEq.beq,instBEqDirective.beq,dropInstrs,Program.straightline',Instr.interp,Operation.interp,Operand.interp] -/
-  /- simp (ground:=True) -/
-  sorry
-  
-
-  /- step1 -/
-
-  /- apply step_cps -/
-  /- step1 -/
-
-  /- apply step_cps -/
-  /- step_one -/
-
-  /- apply eventually.done -/
-  /- simp -/
-
+  step1
+  constructor
+  . apply eventually.done
+    simp
+  . apply eventually.done
+    simp
+ 
 -- Example 3 commented out until we figure out how to parse concrete syntax.
 /- def p3: Program := parse! "
 init:

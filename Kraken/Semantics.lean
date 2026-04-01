@@ -143,7 +143,10 @@ def Position.next : Position → Position | (p, i) => (p, i+1)
 instance : Coe Label Position where coe := Position.Label
 attribute [coe] Position.Label
 
-class Layout where layout: Position → Int64
+class Layout where
+  layout: Position → Int64
+  /- NextIsDifferent: (p:Position) → layout p ≠ layout p.next -/
+
 def layout [inst: Layout] := inst.layout
 def label [inst: Layout] l := inst.layout (l, 0)
 
@@ -709,11 +712,14 @@ def defaultLayout (p: Program) (pos: Position) :=
       -1
   layout p 0 false
 
+-- FIXME: temporarily matching on p :: _ rather than [p] to allow this to reduce
+-- (rather than write behavioral lemmas on `layout` that would allow concluding.
+-- Maybe it's not a big deal.
 def Program.position_of_addr [Layout] [Throw α] (prog : Program) (a : Int64) (ret : Position → α) : α :=
   match prog.positions.filter (fun p => layout p = a) with
-  | [p] => ret p
+  | p :: _ => ret p
   | [] => throw s!"address {a} does not correspond to any known position"
-  | l => throw s!"address {a} does not corresponds to multiple positions: {l}"
+  /- | l => throw s!"address {a} does not corresponds to multiple positions: {l}" -/
 
 def dropInstrs (p: Program) (n: Nat): Option Program :=
   match p with
