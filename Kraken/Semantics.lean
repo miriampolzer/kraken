@@ -225,9 +225,14 @@ instance: DecidableEq ((w: Width) × Reg w) := by
   . apply isFalse
     simp_all
 
+structure AddrIndex where
+  reg: Σ w, Reg w
+  scale: Width
+deriving Repr, BEq, DecidableEq
+
 structure AddrExpr where
   base : Option (Σ w, RegOrRip w)
-  idx : Option ((Σ w, Reg w) × Width)
+  idx : Option AddrIndex
   disp : ConstExpr := .Int64 0
 deriving Repr, BEq, DecidableEq
 
@@ -242,7 +247,7 @@ def AddrExpr.interp [Layout] [address_size : AddressSize] (a : AddrExpr) (s : Re
               | .some ⟨_, .Rip⟩ => (layout p.next).toInt
               | .none => 0
   let idx := match a.idx with
-             | .some (⟨_, r⟩, c) => (s.get r).toInt * c.bytes
+             | .some ⟨⟨_, r⟩, c⟩ => (s.get r).toInt * c.bytes
              | .none => 0
   BitVec.ofInt address_size.address_size.bits (base + idx + (a.disp.interp p).toInt)
 

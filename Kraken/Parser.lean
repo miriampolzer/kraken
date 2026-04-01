@@ -210,7 +210,7 @@ def parseMemory : Parser AddrExpr := do
   let _ ← pchar ')'
   -- Some adapters between the parsed components and the expected dependent
   -- pairs:
-  let idx := Option.map (fun idx => (idx, scale)) idx
+  let idx := Option.map (fun idx => ⟨idx, scale⟩) idx
   pure ({ base, idx, disp })
 
 def parseImm w : Parser (Operand w) := do
@@ -902,7 +902,7 @@ info: [Directive.Instr
                     (Operand.RegOrMem
                       (RegOrMem.mem
                         { base := some ⟨Width.W64, RegOrRip.Reg (Reg.low (Reg64.rsi) (Width.W64))⟩,
-                          idx := some (⟨Width.W64, Reg.low (Reg64.r15) (Width.W64)⟩, Width.W64),
+                          idx := some { reg := ⟨Width.W64, Reg.low (Reg64.r15) (Width.W64)⟩, scale := Width.W64 },
                           disp := ConstExpr.Int64 0 })) }]
 -/
 #guard_msgs in
@@ -1010,7 +1010,7 @@ info: [Directive.Instr
      operation := Operation.lea
                     (Reg.low (Reg64.rax) (Width.W64))
                     { base := some ⟨Width.W64, RegOrRip.Reg (Reg.low (Reg64.rbp) (Width.W64))⟩,
-                      idx := some (⟨Width.W64, Reg.low (Reg64.rcx) (Width.W64)⟩, Width.W32),
+                      idx := some { reg := ⟨Width.W64, Reg.low (Reg64.rcx) (Width.W64)⟩, scale := Width.W32 },
                       disp := ConstExpr.Int64 16 } }]
 -/
 #guard_msgs in
