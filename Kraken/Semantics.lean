@@ -73,7 +73,9 @@ def Reg64s.get64 (s : Reg64s) (r : Reg64) : Width.W64.type := UInt64.toBitVec (m
   | .r8  => s.r8  | .r9  => s.r9  | .r10 => s.r10 | .r11 => s.r11
   | .r12 => s.r12 | .r13 => s.r13 | .r14 => s.r14 | .r15 => s.r15)
 
-def Reg64s.set64 (regs : Reg64s) (r : Reg64) (v : Width.W64.type) (v := UInt64.ofBitVec v) : Reg64s := match r with
+def Reg64s.set64 (regs : Reg64s) (r : Reg64) (v : Width.W64.type) : Reg64s :=
+  let  v := UInt64.ofBitVec v
+  match r with
   | .rax => { regs with rax := v } | .rbx => { regs with rbx := v }
   | .rcx => { regs with rcx := v } | .rdx => { regs with rdx := v }
   | .rsi => { regs with rsi := v } | .rdi => { regs with rdi := v }
