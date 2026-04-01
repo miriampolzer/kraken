@@ -226,7 +226,7 @@ def parseImm w : Parser (Operand w) := do
 -- defer choosing a width for those operands that are untyped (as in: may have
 -- any width).
 def MaybeTyped (T: Width → Type) :=
-  Σ (w: Option Width), match w with | .some w => T w | .none => (w: Width) → T w
+  Σ (w: Option Width), match w with | .some w => T w | .none => { w: Width } → T w
 
 /-- Parse any operand: register, immediate, or memory. -/
 def parseOperand: Parser (MaybeTyped Operand) := do
@@ -238,14 +238,14 @@ def parseOperand: Parser (MaybeTyped Operand) := do
     pure ⟨ w, .reg r ⟩
   | '$' =>
     let i ← parseInt64
-    pure ⟨ .none, fun _ => .imm i ⟩
+    pure ⟨ .none, .imm i ⟩
   | '.' =>
     let i ← parseLabel
-    pure ⟨ .none, fun _ => .imm i ⟩
+    pure ⟨ .none, .imm i ⟩
   | _ =>
     if c == '(' || c == '-' || c.isDigit then
       let m ← parseMemory
-      pure ⟨ .none, fun _ => .mem m ⟩
+      pure ⟨ .none, .mem m ⟩
     else
       fail s!"expected operand, got '{c}'"
 
@@ -258,7 +258,7 @@ def parseRegOrMem: Parser (MaybeTyped RegOrMem) := do
     pure ⟨ .some w, (.Reg r) ⟩
   else if c == '(' || c == '-' || c.isDigit then
     let m ← parseMemory
-    pure ⟨ .none, fun _ => .mem m ⟩
+    pure ⟨ .none, .mem m ⟩
   else
     fail s!"expected register or memory operand, got {c}"
 
@@ -319,7 +319,7 @@ def parseComma : Parser Unit := do
 
 def ascribe {T: Width → Type} (w: Width) (v: MaybeTyped T): Parser (T w) := do
   match v with
-  | ⟨ .none, v ⟩ => pure (v w)
+  | ⟨ .none, v ⟩ => pure v
   | ⟨ .some w2, v ⟩ =>
     if h: w = w2 then
       pure (h ▸ v)
@@ -335,7 +335,7 @@ def ascribeOrInfer (op1: MaybeTyped T1) (next: Parser (MaybeTyped T2)): Parser (
   | ⟨ .none, op1 ⟩ =>
     match op2 with
     | ⟨ .some w2, op2 ⟩ =>
-      pure ⟨ w2, op1 w2, op2 ⟩
+      pure ⟨ w2, op1, op2 ⟩
     | ⟨ .none, _ ⟩ =>
       fail "missing type annotation"
 
@@ -459,7 +459,7 @@ def parseInstr : Parser Instr := do
     match src, lo, hi with
     | ⟨ .none, src ⟩, ⟨ w1, lo ⟩, ⟨ w2, hi ⟩ =>
       if h: w1 = w2 then
-        pure ⟨ .W64, w1, .mulx (h ▸ hi) lo (src w1) ⟩
+        pure ⟨ .W64, w1, .mulx (h ▸ hi) lo src ⟩
       else
         fail "mulx not homogenous"
     | ⟨ .some w3, src ⟩, ⟨ w1, lo ⟩, ⟨ w2, hi ⟩ =>
@@ -486,7 +486,7 @@ def parseInstr : Parser Instr := do
       let src2 ← parseRegOrMem; parseComma
       let ⟨ w, src2, dst ⟩ ← ascribeOrInfer src2 parseReg
       let src1 ← match src1 with
-        | ⟨ .none, src1 ⟩ => pure (src1 w)
+        | ⟨ .none, src1 ⟩ => pure src1
         | ⟨ .some w1, src1 ⟩ => if h: w1 = w then pure (h ▸ src1) else fail "type mismatch in imul"
       pure ⟨ .W64, w, .imul (.some dst) src2 src1 ⟩
     ) <|> (do
@@ -537,7 +537,7 @@ def parseInstr : Parser Instr := do
 
   | "movzx" =>
     -- Must be a register otherwise lacking type info
-    let ⟨ w_src, src ⟩ ← parseRegW
+    let ⟨ _w_src, src ⟩ ← parseRegW
     let ⟨ w_dst, dst ⟩ ← parseRegW
     pure ⟨ .W64, w_dst, .movzx dst (.Reg src) ⟩
 

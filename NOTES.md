@@ -25,10 +25,13 @@ footprint. At a meta-theoretical level, this seems valid, but conducting this
 proof concretely seems nebulous.
 
 But we notice that the only calls to layout are ever of the form `layout p` and
-`layout p.next`, meaning that we do not actually need to pass a layout
-*function* to the semantics; we simply need to evaluate the semantics in a
-context where we have access to the address of the current PC, and the address
-past the current instruction pointed to by the PC.
+`layout p.next` (or `layout ("label", 0)` for known static labels), meaning that
+we do not actually need to pass a layout *function* to the semantics; we simply
+need to evaluate the semantics in a context where we have access to the address
+of the current PC, and the address past the current instruction pointed to by
+the PC.
+
+FIXME: what about the case of static labels?
 
 Thus, if we rewrite our semantics to take two *values*, then the composition of
 two programs boils down to proving a "shifting" lemma, which is that running the
