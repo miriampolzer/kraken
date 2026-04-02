@@ -10,17 +10,15 @@ For tactics, see Kraken/Tactics.lean.
 
 import Kraken.Tactics
 import Kraken.Parser
+import Kraken.Eval
+import Kraken.EvalX64
 
 open Kraken.Parser
 
 noncomputable
 def default [Layout] (start: Label): MachineState := ({}, layout start)
 
--- Example 1: single step of execution
-def p1: Program := [
-  .Label "start",
-  .Instr ⟨ .W64, .W64, .mov (Reg.rax) (.imm (.Int64 1)) ⟩
-]
+def p1 := eval% parse! "start: mov $1, %rax"
 
 syntax "step1" : tactic
 macro_rules
@@ -54,7 +52,7 @@ example [Layout]: step1 p1 (default "start") (fun s => s.1.regs.rax = 1) := by
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
 -- Stepping demo. Ideally, this demo should be without the first .mov
-def p2: Program := [
+def p2 : Program := eval% [
   .Label "start",
   .Instr ⟨ .W64, .W64, .mov Reg.rax (.imm (.Int64 1)) ⟩,
   .Instr ⟨ .W64, .W64, .xor Reg.rax Reg.rax ⟩,
