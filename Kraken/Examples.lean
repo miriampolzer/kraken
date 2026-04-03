@@ -11,7 +11,6 @@ For tactics, see Kraken/Tactics.lean.
 import Kraken.Tactics
 import Kraken.Parser
 import Kraken.Eval
-import Kraken.EvalX64
 
 open Kraken.Parser
 
