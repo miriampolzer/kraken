@@ -320,6 +320,7 @@ def RelRegOrMem.interp [Layout] [AddressSize] [Throw α] (o : RelRegOrMem) (s : 
 inductive Operation (w : Width)
   -- Data movement
   | mov (_ : Dst w) (src : Operand w)
+  | movsx (_ : Dst w) (src : RegOrMem w') -- {_ : w'.bits < w.bits ∧ w'.bits < 32}
   | movzx (_ : Dst w) (src : RegOrMem w') -- {_ : w'.bits < w.bits ∧ w'.bits < 32}
   | push (src : Operand w)
   | pop  (_ : Dst w)
@@ -381,6 +382,7 @@ def Operation.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags
   (next : MachineData → α) (branch : Label → MachineData → α) (jmp : Int64 → MachineData → α) : α :=
   match (generalizing := false) (motive := Operation w → α) i with
   | .mov dst src => src.interp s p (fun val => s.set dst val p next)
+  | .movsx dst src => src.interp s p (fun val => s.set dst (val.signExtend _) p next)
   | .movzx dst src => src.interp s p (fun val => s.set dst (val.zeroExtend _) p next)
   | .push src =>
     src.interp s p (fun v =>
