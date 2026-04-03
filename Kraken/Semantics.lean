@@ -98,17 +98,11 @@ def Reg64s.set (s : Reg64s) (r : Reg w) (v : w.type) : Reg64s := match r with
     s.set64 r.base (old.replaceLow (BitVec.append v (s.get (.low r.base .W8))))
 
 structure StatusFlags where
-  cf : Bool := false
-  pf : Bool := false
-  af : Bool := false
-  zf : Bool := false
-  sf : Bool := false
-  of : Bool := false
-  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
-
-structure StatusFromResultFlags where
   cf : Bool
+  pf : Bool
   af : Bool
+  zf : Bool
+  sf : Bool
   of : Bool
   deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
@@ -116,7 +110,7 @@ abbrev DataMem := Std.ExtHashMap UInt64 UInt64 -- 8-byte-aligned acceses only no
 instance : Repr DataMem where reprPrec _ _ := "<opaque memory>"
 structure MachineData where -- does not include code or program position
   regs : Reg64s := {}
-  status : StatusFlags := {}
+  status : StatusFlags := .mk false false false false false false
   dmem : DataMem := ∅
   deriving Repr, BEq, DecidableEq
 
@@ -322,7 +316,13 @@ inductive Operation (w : Width)
   | nopalign (alignment : Nat) (pad : Option Nat)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
-def StatusFlags.from_result {w} (result : BitVec w) (f : StatusFromResultFlags) : StatusFlags :=
+structure StatusFlags.from_result.Remaining where
+  cf : Bool
+  af : Bool
+  of : Bool
+  deriving Repr, BEq, DecidableEq
+
+def StatusFlags.from_result {w} (result : BitVec w) (f : from_result.Remaining) : StatusFlags :=
   { pf := (result.truncate 8).cpop % 2 != BitVec.zero _
     zf := result == BitVec.zero _
     sf := result.msb, cf := f.cf, af := f.af, of := f.of }
