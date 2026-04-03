@@ -89,8 +89,6 @@ open Reg
 -- functions that can synthesize (bottom-up) the width information. Parsing
 -- functions that cannot synthesize a type take a width as an argument.
 
-abbrev RegW := Σ w, Reg w
-
 /-- Parse a register name. Returns the Reg (may be an alias like eax, ax, al). -/
 def parseRegNameW : Parser RegW := do
   let name ← parseName
@@ -127,18 +125,16 @@ def parseRegW : Parser RegW := do
   let _ ← pchar '%'
   parseRegNameW
 
-abbrev RegOrRipW := Σ w, RegOrRip w
-
-def parseRegOrRipW : Parser RegOrRipW := do
+def parseRegOrRipW : Parser RegOrRip := do
   skipHWs
   let _ ← pchar '%'
   (do
     let _ ← pstring "rip"
-    pure ⟨ .W64, .Rip ⟩
+    pure .rip
   ) <|>
   (do
-    let ⟨ w, r ⟩ ← parseRegNameW
-    pure ⟨ w, RegOrRip.Reg r ⟩
+    let rw ← parseRegNameW
+    pure (.ofRegW rw)
   )
 
 
@@ -343,10 +339,8 @@ def parseWithType (op: Parser (MaybeTyped T1)) (w: Width): Parser (T1 w) := do
   let op ← op
   ascribe w op
 
-def MaybeTyped.ofW {T: Width → Type} (p: Σ w, T w): MaybeTyped T :=
-  ⟨ .some p.1, p.2 ⟩
-
-def parseReg := MaybeTyped.ofW <$> parseRegW
+def parseReg : Parser (MaybeTyped Reg) := do
+  let p ← parseRegW; pure ⟨ .some p.1, p.2 ⟩
 def parseRegWithType := parseWithType parseReg
 def parseOperandWithType := parseWithType parseOperand
 def parseRegOrMemWithType := parseWithType parseRegOrMem
@@ -857,6 +851,7 @@ def parse! (input : String) : Program :=
 
 end Kraken.Parser
 
+
 -- ============================================================================
 -- Tests
 -- ============================================================================
@@ -869,11 +864,8 @@ open Instr Operand Reg
 -- Test: Simple instruction
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.add
-                    (RegOrMem.Reg (Reg.low (Reg64.rbx) (Width.W64)))
-                    (Operand.RegOrMem (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64)))) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.add ↑(low Reg64.rbx Width.W64) ↑↑(low Reg64.rax Width.W64) }]
 -/
 #guard_msgs in
 #eval parse! "addq %rax, %rbx"
@@ -881,9 +873,8 @@ info: [Directive.Instr
 -- Test: Immediate operand
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mov (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 42)) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.mov ↑(low Reg64.rax Width.W64) ↑↑42 }]
 -/
 #guard_msgs in
 #eval parse! "movq $42, %rax"
@@ -892,16 +883,11 @@ info: [Directive.Instr
 -- Test: Memory operand with displacement
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mov
-                    (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64)))
-                    (Operand.RegOrMem
-                      (RegOrMem.mem
-                        { base := some ⟨Width.W64, RegOrRip.Reg (Reg.low (Reg64.rsp) (Width.W64))⟩,
-                          idx := none,
-                          disp := ConstExpr.Int64 8 })) }]
--/
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation :=
+        Operation.mov ↑(low Reg64.rax Width.W64)
+          ↑↑{ base := some (RegOrRip.ofRegW { w := Width.W64, reg := low Reg64.rsp Width.W64 }), idx := none,
+                disp := ↑8 } }]-/
 #guard_msgs in
 #eval parse! "movq 8(%rsp), %rax"
 -- Expected: [.Instr { address_size := .W64, operation_size := .W64, operation := .mov (.Reg (.low .rax .W64)) (.mem .rsp .none 1 8) }]
@@ -909,15 +895,11 @@ info: [Directive.Instr
 -- Test: Memory operand with index and scale
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mov
-                    (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64)))
-                    (Operand.RegOrMem
-                      (RegOrMem.mem
-                        { base := some ⟨Width.W64, RegOrRip.Reg (Reg.low (Reg64.rsi) (Width.W64))⟩,
-                          idx := some { reg := ⟨Width.W64, Reg.low (Reg64.r15) (Width.W64)⟩, scale := Width.W64 },
-                          disp := ConstExpr.Int64 0 })) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation :=
+        Operation.mov ↑(low Reg64.rax Width.W64)
+          ↑↑{ base := some (RegOrRip.ofRegW { w := Width.W64, reg := low Reg64.rsi Width.W64 }),
+                idx := some { reg := { w := Width.W64, reg := low Reg64.r15 Width.W64 }, scale := Width.W64 } } }]
 -/
 #guard_msgs in
 #eval parse! "movq (%rsi, %r15, 8), %rax"
@@ -926,10 +908,9 @@ info: [Directive.Instr
 -- Test: Labeled instruction
 /--
 info: [Directive.Label "loop",
- Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.add (RegOrMem.Reg (Reg.low (Reg64.rcx) (Width.W64))) (Operand.imm (ConstExpr.Int64 1)) }]
+  Directive.Instr
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.add ↑(low Reg64.rcx Width.W64) ↑↑1 }]
 -/
 #guard_msgs in
 #eval parse! "loop: addq $1, %rcx"
@@ -938,7 +919,7 @@ info: [Directive.Label "loop",
 -- Test: Conditional jump
 /--
 info: [Directive.Instr
-   { address_size := Width.W64, operation_size := Width.W64, operation := Operation.jcc (CondCode.nz) "loop" }]
+    { address_size := Width.W64, operation_size := Width.W64, operation := Operation.jcc CondCode.nz "loop" }]
 -/
 #guard_msgs in
 #eval parse! "jnz loop"
@@ -947,20 +928,17 @@ info: [Directive.Instr
 -- Test: Multi-line program
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mov (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 0)) },
- Directive.Label "loop",
- Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.add (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 1)) },
- Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.cmp (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 10)) },
- Directive.Instr
-   { address_size := Width.W64, operation_size := Width.W64, operation := Operation.jcc (CondCode.nz) "loop" }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.mov ↑(low Reg64.rax Width.W64) ↑↑0 },
+  Directive.Label "loop",
+  Directive.Instr
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.add ↑(low Reg64.rax Width.W64) ↑↑1 },
+  Directive.Instr
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.cmp ↑(low Reg64.rax Width.W64) ↑↑10 },
+  Directive.Instr
+    { address_size := Width.W64, operation_size := Width.W64, operation := Operation.jcc CondCode.nz "loop" }]
 -/
 #guard_msgs in
 #eval parse! "
@@ -974,9 +952,8 @@ loop:
 -- Test: Negative immediate
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.add (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 (-1))) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.add ↑(low Reg64.rax Width.W64) ↑↑(-1) }]
 -/
 #guard_msgs in
 #eval parse! "addq $-1, %rax"
@@ -984,9 +961,8 @@ info: [Directive.Instr
 -- Test: Hex immediate
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mov (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64))) (Operand.imm (ConstExpr.Int64 255)) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.mov ↑(low Reg64.rax Width.W64) ↑↑255 }]
 -/
 #guard_msgs in
 #eval parse! "movq $0xff, %rax"
@@ -994,12 +970,8 @@ info: [Directive.Instr
 -- Test: mulx instruction
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.mulx
-                    (Reg.low (Reg64.r10) (Width.W64))
-                    (Reg.low (Reg64.r9) (Width.W64))
-                    (RegOrMem.Reg (Reg.low (Reg64.r8) (Width.W64))) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.mulx (low Reg64.r10 Width.W64) (low Reg64.r9 Width.W64) ↑(low Reg64.r8 Width.W64) }]
 -/
 #guard_msgs in
 #eval parse! "mulxq %r8, %r9, %r10"
@@ -1007,11 +979,8 @@ info: [Directive.Instr
 -- Test: xor for zeroing
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.xor
-                    (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64)))
-                    (Operand.RegOrMem (RegOrMem.Reg (Reg.low (Reg64.rax) (Width.W64)))) }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation := Operation.xor ↑(low Reg64.rax Width.W64) ↑↑(low Reg64.rax Width.W64) }]
 -/
 #guard_msgs in
 #eval parse! "xorq %rax, %rax"
@@ -1019,13 +988,12 @@ info: [Directive.Instr
 -- Test: lea with complex addressing
 /--
 info: [Directive.Instr
-   { address_size := Width.W64,
-     operation_size := Width.W64,
-     operation := Operation.lea
-                    (Reg.low (Reg64.rax) (Width.W64))
-                    { base := some ⟨Width.W64, RegOrRip.Reg (Reg.low (Reg64.rbp) (Width.W64))⟩,
-                      idx := some { reg := ⟨Width.W64, Reg.low (Reg64.rcx) (Width.W64)⟩, scale := Width.W32 },
-                      disp := ConstExpr.Int64 16 } }]
+    { address_size := Width.W64, operation_size := Width.W64,
+      operation :=
+        Operation.lea (low Reg64.rax Width.W64)
+          { base := some (RegOrRip.ofRegW { w := Width.W64, reg := low Reg64.rbp Width.W64 }),
+            idx := some { reg := { w := Width.W64, reg := low Reg64.rcx Width.W64 }, scale := Width.W32 },
+            disp := ↑16 } }]
 -/
 #guard_msgs in
 #eval parse! "leaq 16(%rbp, %rcx, 4), %rax"

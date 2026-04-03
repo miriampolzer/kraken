@@ -1,6 +1,7 @@
 -- The reference semantics are taken from https://www.felixcloutier.com/x86/,
 -- which itself is just extracted from https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
 
+import Lean
 import Std
 
 -- injective coercions only
@@ -13,7 +14,7 @@ def BitVec.drop (x : BitVec w) (n : Nat) : BitVec (w - n) := x.extractLsb' n (w-
 def BitVec.replaceLow (old : BitVec w) (new : BitVec n) : BitVec w :=
   (BitVec.append (old.drop w) new).setWidth _
 
-inductive Width | W8 | W16 | W32 | W64 deriving Repr, BEq, DecidableEq
+inductive Width | W8 | W16 | W32 | W64 deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 instance : ToString Width where
   toString | .W8 => "w8" | .W16 => "w16" | .W32 => "w32" | .W64 => "w64"
@@ -31,12 +32,12 @@ inductive Reg64
   | rsi | rdi | rsp | rbp
   | r8  | r9  | r10 | r11
   | r12 | r13 | r14 | r15
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 inductive Reg : Width → Type
   | low (_ : Reg64) (w : Width) : Reg w
   | ah : Reg .W8 | bh : Reg .W8 | ch : Reg .W8| dh : Reg .W8
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 namespace Reg
 def base {w} (r : Reg w) : Reg64 := match r with
@@ -65,7 +66,7 @@ structure Reg64s where
   r13 : UInt64 := 0
   r14 : UInt64 := 0
   r15 : UInt64 := 0
-  deriving Repr, BEq, DecidableEq, Hashable
+  deriving Repr, BEq, DecidableEq, Hashable, Hashable, Lean.ToExpr
 
 def Reg64s.get64 (s : Reg64s) (r : Reg64) : Width.W64.type := UInt64.toBitVec (match r with
   | .rax => s.rax | .rbx => s.rbx | .rcx => s.rcx | .rdx => s.rdx
@@ -103,13 +104,13 @@ structure StatusFlags where
   zf : Bool := false
   sf : Bool := false
   of : Bool := false
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 structure StatusFromResultFlags where
   cf : Bool
   af : Bool
   of : Bool
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 abbrev DataMem := Std.ExtHashMap UInt64 UInt64 -- 8-byte-aligned acceses only now
 instance : Repr DataMem where reprPrec _ _ := "<opaque memory>"
@@ -160,7 +161,7 @@ inductive ConstExpr
   -- Careful adding operations here! Need to match overflow behavior of all
   -- assemblers we want compatibility with. We assume oversized literals error;
   -- clang and gcc seem to always use 64-bit arithmetic (MCValue has an int64).
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 instance : Coe Label ConstExpr where coe := ConstExpr.Label
 instance : Coe Int64 ConstExpr where coe := ConstExpr.Int64
 attribute [coe] ConstExpr.Label
@@ -174,77 +175,30 @@ def ConstExpr.interp [Layout] : ConstExpr → Position → _root_.Int64
   | .add e1 e2, p => e1.interp p + e2.interp p
   | .sub e1 e2, p => e1.interp p - e2.interp p
 
-inductive RegOrRip: (w : Width) → Type where
-  | Reg: Reg w → RegOrRip w
-  | Rip: RegOrRip .W64
-deriving Repr, BEq, DecidableEq
+structure RegW where (w : Width) (reg : Reg w)
+  deriving Repr, DecidableEq, Hashable, Lean.ToExpr, Hashable, Lean.ToExpr
 
-instance: BEq ((w: Width) × RegOrRip w) where
-  beq := fun (p1: ((w: Width) × RegOrRip w)) (p2: ((w: Width) × RegOrRip w)) =>
-    let ⟨ w1, r1 ⟩ := p1
-    let ⟨ w2, r2 ⟩ := p2
-    if h: w1 = w2 then
-      r1 = (h ▸ r2)
-    else
-      false
-
-instance: BEq ((w: Width) × Reg w) where
-  beq := fun (p1: ((w: Width) × Reg w)) (p2: ((w: Width) × Reg w)) =>
-    let ⟨ w1, r1 ⟩ := p1
-    let ⟨ w2, r2 ⟩ := p2
-    if h: w1 = w2 then
-      r1 = (h ▸ r2)
-    else
-      false
-
-instance: DecidableEq ((w: Width) × RegOrRip w) := by
-  intros p1 p2
-  rcases p1 with ⟨ w1, r1 ⟩
-  rcases p2 with ⟨ w2, r2 ⟩
-  by_cases h: w1 = w2
-  . subst h -- rw leaves a heterogeneous equality
-    by_cases h2: r1 = r2
-    . apply isTrue
-      simp_all
-    . apply isFalse
-      simp_all
-  . apply isFalse
-    simp_all
-
-instance: DecidableEq ((w: Width) × Reg w) := by
-  intros p1 p2
-  rcases p1 with ⟨ w1, r1 ⟩
-  rcases p2 with ⟨ w2, r2 ⟩
-  by_cases h: w1 = w2
-  . subst h -- rw leaves a heterogeneous equality
-    by_cases h2: r1 = r2
-    . apply isTrue
-      simp_all
-    . apply isFalse
-      simp_all
-  . apply isFalse
-    simp_all
+inductive RegOrRip where | ofRegW (_ : RegW) | rip : RegOrRip
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 structure AddrIndex where
-  reg: Σ w, Reg w
+  reg : RegW
   scale: Width
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 structure AddrExpr where
-  base : Option (Σ w, RegOrRip w)
+  base : Option RegOrRip
   idx : Option AddrIndex
   disp : ConstExpr := .Int64 0
-deriving Repr, BEq, DecidableEq
-
-def RipRel (e : ConstExpr) : AddrExpr := .mk (.some ⟨.W64, .Rip⟩) .none (.sub e .after_current_instruction)
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 class AddressSize where address_size : Width
 def address_size [inst: AddressSize] := inst.address_size
 
 def AddrExpr.interp [Layout] [address_size : AddressSize] (a : AddrExpr) (s : Reg64s) (p : Position) :=
   let base := match a.base with
-              | .some ⟨_, .Reg r⟩ => (s.get r).toInt
-              | .some ⟨_, .Rip⟩ => (layout p.next).toInt
+              | .some (.ofRegW ⟨_, r⟩)  => (s.get r).toInt
+              | .some .rip => (layout p.next).toInt
               | .none => 0
   let idx := match a.idx with
              | .some ⟨⟨_, r⟩, c⟩ => (s.get r).toInt * c.bytes
@@ -252,7 +206,7 @@ def AddrExpr.interp [Layout] [address_size : AddressSize] (a : AddrExpr) (s : Re
   BitVec.ofInt address_size.address_size.bits (base + idx + (a.disp.interp p).toInt)
 
 inductive RegOrMem w | Reg (r : Reg w) | mem (_ : AddrExpr)
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 instance : Coe AddrExpr (RegOrMem w) where coe := RegOrMem.mem
 attribute [coe] RegOrMem.mem
 instance : Coe (Reg w) (RegOrMem w) where coe := RegOrMem.Reg
@@ -274,7 +228,7 @@ def MachineData.set [Layout] [AddressSize] [Throw α] (s : MachineData) (d : Dst
   | .mem a => s.store (a.interp s.regs p).TODO_address_extend_signedness v ret
 
 inductive Operand w | RegOrMem (_ : RegOrMem w) | imm (v : ConstExpr)
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 instance : Coe (RegOrMem w) (Operand w) where coe := Operand.RegOrMem
 attribute [coe] Operand.RegOrMem
 instance : Coe ConstExpr (Operand w) where coe := Operand.imm
@@ -289,7 +243,7 @@ def Operand.interp [Layout] [AddressSize] [Throw α] (o : Operand w) (s : Machin
   -- we rely on assemblers erroring out on too-large immediates in uniform ops
 
 inductive CondCode | z | nz | c | nc | a | be
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 abbrev CondCode.e := CondCode.z
 abbrev CondCode.ne := CondCode.nz
 abbrev CondCode.b := CondCode.c
@@ -300,7 +254,7 @@ def CondCode.interp (cc : CondCode) (s : StatusFlags) : Bool := match cc with
   | .a  => !s.cf && !s.zf | .be => s.cf || s.zf
 
 inductive ShiftCountExpr | cl | imm8 (v : ConstExpr)
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 def ShiftCountExpr.interp [Layout] (c : ShiftCountExpr) (s : MachineData) (p : Position) := match c with
   | .cl => s.regs.rcx.toBitVec.take 8
@@ -309,7 +263,7 @@ def ShiftCountExpr.interpMasked [Layout] (c : ShiftCountExpr) (s : MachineData) 
   (c.interp s p).toNat &&& match w with | .W64 => 0x1f | _ => 0x0f -- "masked to 5 bits (or 6 bits with a 64-bit operand)"
 
 inductive RelRegOrMem | Rel (_ : ConstExpr) | Reg (r : Reg .W64) | mem (_ : AddrExpr)
-deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
 def RelRegOrMem.interp [Layout] [AddressSize] [Throw α] (o : RelRegOrMem) (s : MachineData) (p : Position) (ret : BitVec 64 → α) :=
   match o with
@@ -366,7 +320,7 @@ inductive Operation (w : Width)
   -- TODO: optiona third argument, with the caveat that `.align 16,,0` is valid
   -- syntax
   | nopalign (alignment : Nat) (pad : Option Nat)
-deriving Repr, DecidableEq
+  deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 def StatusFlags.from_result {w} (result : BitVec w) (f : StatusFromResultFlags) : StatusFlags :=
   { pf := (result.truncate 8).cpop % 2 != BitVec.zero _
@@ -640,7 +594,7 @@ structure Instr where
   address_size : Width
   operation_size : Width
   operation : Operation operation_size
-deriving Repr, DecidableEq
+  deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 def Instr.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α] [Undefined Bool α] [Throw α] [Layout]
   (i : Instr) (s : MachineData) (p : Position)
@@ -649,11 +603,12 @@ def Instr.interp [∀ w : Width, Undefined w.type α] [Undefined StatusFlags α]
 
 instance : Repr ByteArray where reprPrec _ _ := "<opaque byte array>"
 
+deriving instance Lean.ToExpr for ByteArray
 inductive Directive
-| Instr (_ : Instr)
-| Label (_ : Label)
-| ByteArray (_ : ByteArray)
-deriving BEq, DecidableEq, Repr
+  | Instr (_ : Instr)
+  | Label (_ : Label)
+  | ByteArray (_ : ByteArray)
+  deriving BEq, DecidableEq, Repr, Hashable, Lean.ToExpr
 
 abbrev Program := List Directive
 
