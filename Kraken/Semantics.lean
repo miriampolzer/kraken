@@ -324,7 +324,7 @@ def cpop_ {w} (x : BitVec w) : BitVec w := BitVec.ofNat w (cpopNatRec_ x w 0)
 end BitVec
 
 def StatusFlags.from_result {w} (result : BitVec w) (f : from_result.Remaining) : StatusFlags :=
-  { pf := (result.truncate 8).cpop_ % 2 != BitVec.zero _
+  { pf := (result.truncate 8).cpop_ % 2 == BitVec.zero _
     zf := result == BitVec.zero _
     sf := result.msb, cf := f.cf, af := f.af, of := f.of }
 
@@ -414,30 +414,30 @@ def Operation.interp {α} [∀ w : Width, Undefined w.type α] [Undefined Status
   | .sub dst src =>
     src.interp s p (fun a =>
     dst.interp s p (fun b =>
-    let v := a - b
+    let v := b - a
     let status := .from_result v {
-      cf := v.toNat != a.toNat - b.toNat
-      af := (v.truncate 4).toNat != (a.truncate 4).toNat - (b.truncate 4).toNat,
-      of := v.toInt != a.toInt - b.toInt }
+      cf := v.toNat != b.toNat - a.toNat
+      af := (v.truncate 4).toNat != (b.truncate 4).toNat - (a.truncate 4).toNat,
+      of := v.toInt != b.toInt - a.toInt }
     { s with status }.set dst v p next))
   | .sbb dst src =>
     src.interp s p (fun a =>
     dst.interp s p (fun b =>
     let c := s.status.cf
-    let v := a - b - c
+    let v := b - a - c
     let status := .from_result v {
-      cf := v.toNat != a.toNat - b.toNat - c.toNat
-      af := (v.truncate 4).toNat != (a.truncate 4).toNat - (b.truncate 4).toNat - c.toNat,
-      of := v.toInt != a.toInt - b.toInt - c.toInt }
+      cf := v.toNat != b.toNat - a.toNat - c.toNat
+      af := (v.truncate 4).toNat != (b.truncate 4).toNat - (a.truncate 4).toNat - c.toNat,
+      of := v.toInt != b.toInt - a.toInt - c.toInt }
     { s with status }.set dst v p next))
   | .cmp a b =>
     a.interp s p (fun a =>
     b.interp s p (fun b =>
-    let v := a - b
+    let v := b - a
     let status := .from_result v {
-      cf := v.toNat != a.toNat - b.toNat
-      af := (v.truncate 4).toNat != (a.truncate 4).toNat - (b.truncate 4).toNat,
-      of := v.toInt != a.toInt - b.toInt }
+      cf := v.toNat != b.toNat - a.toNat
+      af := (v.truncate 4).toNat != (b.truncate 4).toNat - (a.truncate 4).toNat,
+      of := v.toInt != b.toInt - a.toInt }
     next { s with status }))
   | .mul src =>
     let a := s.regs.get (Reg.low .rax w)

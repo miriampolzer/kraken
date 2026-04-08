@@ -285,10 +285,10 @@ def compareRegisters (expected actual : Reg64s) : List String :=
 def compareFlags (expected actual : StatusFlags) : List String :=
   let checks := [
     ("CF", expected.cf, actual.cf),
-    ("PF", expected.zf, actual.pf),
-    ("AF", expected.zf, actual.af),
+    ("PF", expected.pf, actual.pf),
+    ("AF", expected.af, actual.af),
     ("ZF", expected.zf, actual.zf),
-    ("SF", expected.zf, actual.sf),
+    ("SF", expected.sf, actual.sf),
     ("OF", expected.of, actual.of)
   ]
   checks.filterMap fun (name, exp, act) =>
@@ -345,7 +345,7 @@ def finishCriterion (p: Program) (s: MachineState): Bool :=
 
 /-- Run assembly through Kraken's semantics.
     Returns the final machine state after execution. -/
-def runKraken (asmCode : String) 
+def runKraken (asmCode : String)
     : Except String MachineState := do
   let prog ← Parser.parse (startGadget ++ asmCode ++ endGadget)
   let initState: MachineState := ({}, prog.fakeLayout.labels.label "__start")
