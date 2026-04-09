@@ -37,6 +37,32 @@ example [layout : Layout] s : step1 (layout p1) (s, layout.start) (fun s => s.1.
 
   /- simp [p1,step1,eval1,fetch,Instr.is_ctrl,strt1,eval_operand,eval_imm,set_reg_or_mem,next,MachineState.setReg,Registers.set] -/
 
+def swap : Program := eval% parse! "
+  xor %rbx, %rax
+  xor %rax, %rbx
+  xor %rbx, %rax"
+
+theorem swap_correct [layout : Layout] (d : MachineData) :
+      eventually (layout swap)
+      (fun s' =>
+          s'.1.regs.get Reg.rax = d.regs.get Reg.rbx ∧
+          s'.1.regs.get Reg.rbx = d.regs.get Reg.rax)
+      (d, layout.start) := by
+  dsimp [swap]
+  apply step_cps
+  dsimp only [step1, Executable.straightline, Directives.interp]
+  rw [Executable.directivesFromStart]
+  simp [List.mapIdx, List.mapIdx.go]
+  -- TODO It would be nice to progress instruction by instruction instead of all at once, like below.
+  dsimp only [Directives.interp, Directive.interp, Instr.interp, Operation.interp, Operand.interp, RegOrMem.interp]
+  dsimp [MachineData.set, MachineData.setReg, Reg64s.set, Reg64s.set64]
+  intros _af1 _af2 _af3
+  apply eventually.done
+  simp (ground:=True)
+  dsimp only [Reg64s.get, Reg64s.get64, Reg.base, Reg.offset]
+  dsimp only [BitVec.drop, BitVec.take, Width.bits]
+  bv_decide
+
 -- Stepping demo. Ideally, this demo should be without the first .mov
 def p2 : Program := eval% [
   .Label "start",
