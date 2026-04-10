@@ -4,7 +4,8 @@ Kraken Parser - x86_64 AT&T Assembly Parser
 Parses AT&T syntax assembly strings into Kraken's Program type.
 Uses Lean's built-in Std.Internal.Parsec library.
 
-Compatible with Lean 4.22.0+.
+The primary reference for the syntax is the GAS manual:
+https://sourceware.org/binutils/docs/as/
 -/
 
 import Kraken.Semantics
@@ -176,6 +177,7 @@ def parseMemory : Parser AddrExpr := do
   skipHWs
   -- Optional displacement; TODO: parse ConstExpr generally
   let disp ← (do let i ← parseInt; pure (.Int64 (Int64.ofInt i))) <|> parseLabel <|> pure (.Int64 0)
+  skipHWs
   let _ ← pchar '('
 
   skipHWs
@@ -288,6 +290,7 @@ def parseShiftExpr: Parser ShiftCountExpr := do
     let _ ← pstring "%cl"
     pure .cl)
 
+
 -- ============================================================================
 -- Condition Code Parsing
 -- ============================================================================
@@ -312,6 +315,10 @@ def parseComma : Parser Unit := do
   skipHWs
   let _ ← pchar ','
   skipHWs
+
+/-- Try to parse a shift count followed by a comma; if that fails, default to 1. -/
+def parseOptionalShiftAndComma : Parser ShiftCountExpr :=
+  (attempt do let cnt ← parseShiftExpr; parseComma; pure cnt) <|> pure (.imm8 (.Int64 1))
 
 def ascribe {T: Width → Type} (w: Width) (v: MaybeTyped T): Parser (T w) := do
   match v with
@@ -442,6 +449,11 @@ def parseInstr : Parser Instr := do
   | "mul" =>
     let src ← parseRegOrMem
     let ⟨ w, src ⟩ ← assertW src
+    pure ⟨ .W64, w, .mul src ⟩
+
+  | "mulq" | "mull" | "mulw" | "mulb" =>
+    let w ← instrWidth mn
+    let src ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .mul src ⟩
 
   | "mulx" =>
@@ -612,7 +624,7 @@ def parseInstr : Parser Instr := do
   -- Shift instructions - 64-bit
   | "shl"
   | "sal" =>
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMem
     let ⟨ w, dst ⟩ ← assertW dst
     pure ⟨ .W64, w, .shl dst cnt ⟩
@@ -620,31 +632,31 @@ def parseInstr : Parser Instr := do
   | "shlq" | "shll" | "shlw" | "shlb"
   | "salq" | "sall" | "salw" | "salb" =>
     let w ← instrWidth mn
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .shl dst cnt ⟩
 
   | "shr" =>
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMem
     let ⟨ w, dst ⟩ ← assertW dst
     pure ⟨ .W64, w, .shr dst cnt ⟩
 
   | "shrq" | "shrl" | "shrw" | "shrb" =>
     let w ← instrWidth mn
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .shr dst cnt ⟩
 
   | "sar" =>
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMem
     let ⟨ w, dst ⟩ ← assertW dst
     pure ⟨ .W64, w, .sar dst cnt ⟩
 
   | "sarq" | "sarl" | "sarw" | "sarb" =>
     let w ← instrWidth mn
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .sar dst cnt ⟩
 
@@ -668,26 +680,26 @@ def parseInstr : Parser Instr := do
 
   -- Rotate instructions - 64-bit
   | "rol" =>
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMem
     let ⟨ w, dst ⟩ ← assertW dst
     pure ⟨ .W64, w, .rol dst cnt ⟩
 
   | "rolq" | "roll" | "rolw" | "rolb" =>
     let w ← instrWidth mn
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .rol dst cnt ⟩
 
   | "ror" =>
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMem
     let ⟨ w, dst ⟩ ← assertW dst
     pure ⟨ .W64, w, .ror dst cnt ⟩
 
   | "rorq" | "rorl" | "rorw" | "rorb" =>
     let w ← instrWidth mn
-    let cnt ← parseShiftExpr; parseComma
+    let cnt ← parseOptionalShiftAndComma
     let dst ← parseRegOrMemWithType w
     pure ⟨ .W64, w, .ror dst cnt ⟩
 
