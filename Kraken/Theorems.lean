@@ -7,14 +7,6 @@ Used by tactics and examples for simplification.
 
 import Kraken.Semantics
 
--- Immediate conversion simp lemmas
-@[simp] theorem Int64_toUInt64_zero : Int64.toUInt64 0 = 0 := by native_decide
-@[simp] theorem Int64_toUInt64_one : Int64.toUInt64 1 = 1 := by native_decide
-@[simp] theorem Int64_toUInt64_two : Int64.toUInt64 2 = 2 := by native_decide
-@[simp] theorem Int64_toUInt64_zero_toNat : (Int64.toUInt64 0).toNat = 0 := by native_decide
-@[simp] theorem Int64_toUInt64_one_toNat : (Int64.toUInt64 1).toNat = 1 := by native_decide
-@[simp] theorem Int64_toUInt64_two_toNat : (Int64.toUInt64 2).toNat = 2 := by native_decide
-
 -- UInt64.ofInt (k : Int) ≠ 0 when k is a natural number with k < 2^64 and k ≠ 0
 -- This proof uses only core Lean lemmas (no Batteries/Mathlib)
 theorem UInt64_ofInt_natCast_ne_zero (k : Nat) (h_lt : k < 2^64) (h_ne : k ≠ 0) :
