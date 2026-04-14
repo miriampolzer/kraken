@@ -10,5 +10,5 @@ relaxedAutoImplicit = false
 name = "Kraken"
 
 [[lean_exe]]
-name = "krakentest"
-root = "KrakenTest"
+name = "krakenrunner"
+root = "KrakenRunner"

@@ -9,9 +9,6 @@ For experimental features (SymM tactics), see kraken-experimental/.
 
 import Kraken.Semantics
 import Kraken.Parser
-import Kraken.TestHarness
 import Kraken.Theorems
 import Kraken.Tactics
 import Kraken.Examples
-
-
