@@ -24,6 +24,7 @@ structure StateSummary where
   regs : List (String × UInt64)
   flags : List (String × Bool)
 
+-- Custom json serialization for the state summary.
 instance : ToJson StateSummary where
   toJson s :=
     let regs := s.regs.map (fun (k, v) => (k, Json.num v.toNat))
@@ -53,7 +54,7 @@ def finishCriterion (p: Program) (s: MachineState): Bool :=
 
 def runKraken (asmCode : String)
     : Except String MachineState := do
-  let prog ← Kraken.Parser.parse (_start ++ ":" ++ asmCode ++ _end ++ ":")
+  let prog ← Kraken.Parser.parse (_start ++ ":" ++ asmCode ++ "\n" ++ _end ++ ":")
   let initState: MachineState := ({}, prog.fakeLayout.labels.label _start)
   prog.fakeLayout.eval initState (finishCriterion prog)
 

@@ -15,6 +15,7 @@ KRAKEN_RUNNER = SCRIPT_DIR / ".lake/build/bin/krakenrunner"
 
 REGS = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+# Maps each flag to its bit in the EFLAGS register.
 FLAG_MAP = {"cf": 0, "pf": 2, "af": 4, "zf": 6, "sf": 7, "of": 11}
 TIMEOUT_SECONDS = 50
 
@@ -26,6 +27,7 @@ class Color:
 
 def get_boilerplate(instruction_text: str) -> str:
   reg_count = len(REGS)
+  # We move all base registers + the eflags register into memory, so as to dump it later to stdout.
   total_bytes = (reg_count + 1) * 8
     
   moves = "\n    ".join([f"movq %{reg}, _final_state + {i*8}(%rip)" for i, reg in enumerate(REGS)])
@@ -46,6 +48,8 @@ _start:
     popq %rax
     movq %rax, _final_state + {reg_count * 8}(%rip)
 
+    # print syscall: arguments are 1 (syscall number), 1 (stdout), address of _final_state, and length of _final_state
+    # See e.g. https://x64.syscall.sh/ for syscall table.
     movq $1, %rax
     movq $1, %rdi
     leaq _final_state(%rip), %rsi

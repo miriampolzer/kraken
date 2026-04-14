@@ -64,4 +64,3 @@ shrq $4, %r11                    # explicit $4
 # The test harness compares all flags including AF. Use addq $0 to reset
 # AF to a known state matching both hardware and Kraken.
 addq $0, %r11
-
