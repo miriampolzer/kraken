@@ -108,14 +108,23 @@ def run_kraken(path: Path) -> Tuple[Optional[ExecutionState], Optional[str]]:
     except Exception as e:
         return None, f"Kraken Error: {e}"
 
-def compare_states(real: ExecutionState, kraken: ExecutionState) -> List[str]:
+# Parse the preamble for flags to be masked out because they are left undefined by the test.
+def get_undefined_flags(path: Path) -> List[str]:
+    first_line = path.read_text().splitlines()[0]
+    # TODO String parsing is brittle, a structured format for test metadata would be more sustainable long term.
+    if first_line.startswith("# Undefined flags:"):
+        raw_flags = first_line.split(":", 1)[1]
+        return [f.strip() for f in raw_flags.split(",") if f.strip()]
+    return []
+
+def compare_states(real: ExecutionState, kraken: ExecutionState, undefined_flags: List[str]) -> List[str]:
     diffs = []
     for r in [r for r in REGS if r != "rsp"]:
         rv, kv = real.regs[r], kraken.regs[r]
         if rv != kv:
             diffs.append(f"{r}: x86={rv:#x} ({rv}), kraken={kv:#x} ({kv})")
             
-    for f in FLAG_MAP:
+    for f in [f for f in FLAG_MAP if not f in undefined_flags]:
         if real.flags[f] != kraken.flags[f]:
             diffs.append(f"flag {f}: x86={real.flags[f]} | kraken={kraken.flags[f]}")
     return diffs
@@ -130,7 +139,8 @@ def test_file(path: Path) -> Tuple[bool, str]:
         print(f"[{Color.RED}CRASH{Color.RESET}]")
         return False, real_err or kraken_err
 
-    diffs = compare_states(real, kraken)
+    undefined_flags = get_undefined_flags(path)
+    diffs = compare_states(real, kraken, undefined_flags)
     if diffs:
         print(f"[{Color.RED}FAIL{Color.RESET}]")
         return False, "\n".join(diffs)

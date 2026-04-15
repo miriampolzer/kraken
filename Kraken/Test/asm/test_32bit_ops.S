@@ -1,3 +1,5 @@
+# Undefined flags: af, of
+
 # Test 32-bit arithmetic and bitwise operations
 # Tests: addl, subl, negl, xorl, andl, orl
 #

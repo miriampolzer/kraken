@@ -1,3 +1,5 @@
+# Undefined flags: af
+
 # Test shift and rotate instructions
 # Tests: shlq, shrq, sarq, rolq, rorq (64-bit)
 #
