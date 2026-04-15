@@ -369,7 +369,7 @@ def Operation.interp {α} [∀ w : Width, Undefined w.type α] [Undefined Status
     src.interp s p (fun a =>
     dst.interp s p (fun b =>
     let c := s.status.cf
-    let v := a + b + s.status.cf + c
+    let v := a + b + c
     let status := .from_result v {
       cf := v.toNat != a.toNat + b.toNat + c
       af := (v.truncate 4).toNat != (a.truncate 4).toNat + (b.truncate 4).toNat + c,
