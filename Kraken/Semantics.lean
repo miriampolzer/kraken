@@ -12,7 +12,7 @@ instance : Coe Bool Nat where coe := Bool.toNat
 def BitVec.take {w} (x : BitVec w) (n : Nat) : BitVec n := x.extractLsb' 0 n
 def BitVec.drop {w} (x : BitVec w) (n : Nat) : BitVec (w - n) := x.extractLsb' n (w-n)
 def BitVec.replaceLow {w n} (old : BitVec w) (new : BitVec n) : BitVec w :=
-  (BitVec.append (old.drop w) new).setWidth _
+  (BitVec.append (old.drop n) new).setWidth _
 
 inductive Width | W8 | W16 | W32 | W64 deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
@@ -123,15 +123,32 @@ def throw {α} [inst: Throw α] :=
 def Reg.interp {α w} (r : Reg w) (s : MachineData) (_ : Std.Rco Int64) (ret : w.type → α) :=
   ret (s.regs.get r) -- the unused argument is present ^ for uniformity with RegOrMem.interp
 
+def MachineData.loadOpt {α} [Throw α] (s : MachineData) (addr : BitVec 64) (ret : Option UInt64 → α): α :=
+  if addr % 8 != 0 then
+    throw (s!"Unimplemented: only 8-byte-aligned memory access is supported")
+  else
+    ret (s.dmem[UInt64.ofBitVec addr]?)
+
 def MachineData.load {α} [Throw α] (s : MachineData) (addr : BitVec 64) (w : Width) (ret : w.type → α): α :=
-  if addr % 8 != 0 then throw (s!"Unimplemented: only 8-byte-aligned memory access is supported")
-  else match s.dmem[UInt64.ofBitVec addr]? with
-  | .some v => ret (v.toBitVec.truncate _)
-  | .none => throw (s!"Memory accessed but not mapped (addr={repr addr})")
+    loadOpt s addr (fun v =>
+    match v with
+    | .some v => ret (v.toBitVec.truncate _)
+    | .none => throw (s!"Memory accessed but not mapped (addr={repr addr})"))
 
 def MachineData.store {α} [Throw α] (s : MachineData) (addr : BitVec 64) {w : Width} (v : w.type) (ret: MachineData → α) : α :=
-  s.load addr .W64 (fun old =>
-  ret { s with dmem := s.dmem.insert (.ofBitVec addr) (.ofBitVec (old.replaceLow v)) })
+    s.loadOpt addr (fun old =>
+    match old with
+    | .some old =>
+      ret { s with dmem := s.dmem.insert (.ofBitVec addr) (.ofBitVec (old.toBitVec.replaceLow v)) }
+    | .none =>
+      if h: w = .W64 then
+        -- We know how to perform full writes even though there is not previous
+        -- value
+        have : w.type = BitVec 64 := by simp [h,Width.type,Width.bits]
+        ret { s with dmem := s.dmem.insert (.ofBitVec addr) (UInt64.ofBitVec (this ▸ v)) }
+      else
+        throw (s!"Cannot perform a partial write at {addr} because there is no previous value")
+  )
 
 abbrev Label := String
 
@@ -283,6 +300,7 @@ inductive Operation (w : Width)
   -- Bitwise
   | test (a : RegOrMem w) (b : Operand w)
   | and  (_ : Dst w) (src : Operand w)
+  | not  (_ : Dst w)
   | or   (_ : Dst w) (src : Operand w)
   | xor  (_ : Dst w) (src : Operand w)
   | shl  (_ : Dst w) (_ : ShiftCountExpr)
@@ -480,6 +498,10 @@ def Operation.interp {α} [∀ w : Width, Undefined w.type α] [Undefined Status
     undefined (fun af =>
     let status := .from_result v { cf := false, of := false, af }
     { s with status }.set dst v p next)))
+  | .not dst =>
+    dst.interp s p (fun a =>
+    let v := ~~~a
+    s.set dst v p next)
   | .shl dst count =>
     dst.interp s p (fun a =>
     let count := count.interpMasked s p w
