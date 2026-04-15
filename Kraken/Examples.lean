@@ -42,21 +42,42 @@ def swap : Program := eval% parse! "
   xor %rax, %rbx
   xor %rbx, %rax"
 
+syntax "step1" : tactic
+macro_rules
+  | `(tactic|step1) =>
+  `(tactic|
+    generalize hp: _::_ = p;
+
+    cases p with
+    | nil => contradiction
+    | cons hd tl => ?_;
+
+    injection hp with h_hd h_tl;
+    rw [← h_hd];
+    simp [Directives.interp, Directive.interp, Instr.interp, Operation.interp, RegOrMem.interp, Operand.interp];
+    intro _af;
+    rw [← h_tl])
+
 theorem swap_correct [layout : Layout] (d : MachineData) :
       eventually (layout swap)
       (fun s' =>
           s'.1.regs.get Reg.rax = d.regs.get Reg.rbx ∧
           s'.1.regs.get Reg.rbx = d.regs.get Reg.rax)
       (d, layout.start) := by
-  dsimp [swap]
   apply step_cps
-  dsimp only [step1, Executable.straightline, Directives.interp]
+  dsimp only [step1, Executable.straightline]
+  dsimp only [swap]
   rw [Executable.directivesFromStart]
   simp [List.mapIdx, List.mapIdx.go]
-  -- TODO It would be nice to progress instruction by instruction instead of all at once, like below.
-  dsimp only [Directives.interp, Directive.interp, Instr.interp, Operation.interp, Operand.interp, RegOrMem.interp]
-  dsimp [MachineData.set, MachineData.setReg, Reg64s.set, Reg64s.set64]
-  intros _af1 _af2 _af3
+
+  generalize hpost: _::_ = p_post
+
+  step1
+  step1
+  step1
+
+  simp [MachineData.set, MachineData.setReg, Reg64s.set, Reg64s.set64]
+
   apply eventually.done
   simp (ground:=True)
   dsimp only [Reg64s.get, Reg64s.get64, Reg.base, Reg.offset]
