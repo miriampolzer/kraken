@@ -1,3 +1,5 @@
+# Undefined flags: af
+
 # Test: Logical Operations
 # Tests: xorq, andq, orq
 #

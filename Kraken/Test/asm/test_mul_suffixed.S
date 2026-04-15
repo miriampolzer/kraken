@@ -1,3 +1,5 @@
+# Undefined flags: af, sf, zf, pf
+
 # Test: Suffixed mul instruction variants
 # Commit: 20d9d63 - Parser fixes for missing instruction variants
 # Tests: mulq, mull (suffixed one-operand multiply, which were previously

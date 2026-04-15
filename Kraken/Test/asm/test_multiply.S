@@ -1,3 +1,5 @@
+# Undefined flags: af, sf, zf, pf
+
 # Test: Multiplication Operations
 # Tests: mulq, imulq
 #
