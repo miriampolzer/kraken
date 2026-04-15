@@ -503,13 +503,13 @@ def parseInstr : Parser Instr := do
   | "imulq" | "imull" | "imulw" | "imulb" =>
     let w ← instrWidth mn
     let src1 ← parseOperandWithType w; parseComma
-    (do
+    (attempt do
       let src2 ← parseRegOrMemWithType w; parseComma
       let dst ← parseRegWithType w
       pure ⟨ .W64, w, .imul (.some dst) src2 src1 ⟩
     ) <|>
     (do
-      let src2 ← parseRegOrMemWithType w; parseComma
+      let src2 ← parseRegOrMemWithType w
       pure ⟨ .W64, w, .imul none src2 src1 ⟩
     )
 
@@ -557,7 +557,7 @@ def parseInstr : Parser Instr := do
     let w_dst ← instrWidth mn
     let c_src ← String.Pos.Raw.get? mn (.mk (mn.length - 2))
     let w_src ← Char.toWidth c_src
-    let src ← parseRegWithType w_src
+    let src ← parseRegWithType w_src; parseComma
     let dst ← parseRegWithType w_dst
     pure ⟨ .W64, w_dst, .movzx dst (.Reg src) ⟩
 
@@ -565,7 +565,7 @@ def parseInstr : Parser Instr := do
     let w_dst ← instrWidth mn
     let c_src ← String.Pos.Raw.get? mn (.mk (mn.length - 2))
     let w_src ← Char.toWidth c_src
-    let src ← parseRegWithType w_src
+    let src ← parseRegWithType w_src; parseComma
     let dst ← parseRegWithType w_dst
     pure ⟨ .W64, w_dst, .movzx dst (.Reg src) ⟩
 
@@ -597,6 +597,16 @@ def parseInstr : Parser Instr := do
   | "andq" | "andl" | "andw" | "andb" =>
     let w ← instrWidth mn
     commaSeparated w parseOperand parseRegOrMem .and
+
+  | "not" =>
+    let dst ← parseRegOrMem
+    let ⟨ w, dst ⟩ ← assertW dst
+    pure ⟨ .W64, w, .not dst ⟩
+
+  | "notq" | "notl" | "notw" | "notb" =>
+    let w ← instrWidth mn
+    let dst ← parseRegOrMemWithType w
+    pure ⟨ .W64, w, .not dst ⟩
 
   | "or" =>
     commaSeparated .none parseOperand parseRegOrMem .or
