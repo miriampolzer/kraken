@@ -1,8 +1,5 @@
 /-
 Kraken - Helper Theorems
-
-Small helper theorems for working with integer types.
-Used by tactics and examples for simplification.
 -/
 
 import Kraken.Semantics
