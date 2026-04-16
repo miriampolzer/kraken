@@ -143,4 +143,4 @@ macro_rules
     simp (ground:=True);
     simp [MachineData.set,Reg64s.set,MachineData.setReg,Reg64s.set64,ConstExpr.interp];
     simp (ground:=True)
-       <;> try native_decide)
+       <;> try decide)
