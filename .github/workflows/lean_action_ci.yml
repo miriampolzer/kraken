@@ -22,7 +22,7 @@ jobs:
         run: echo "leanprover/lean4:v4.28.0" > lean-toolchain
       - uses: leanprover/lean-action@v1
 
-  run-asm-tests:
+  run-asm-tests-ubuntu:
     name: Run ASM tests (Ubuntu)
     runs-on: ubuntu-latest
     steps:

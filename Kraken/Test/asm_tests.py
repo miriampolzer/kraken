@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import json
-import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -19,27 +19,52 @@ REGS = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rsp", "rbp",
 FLAG_MAP = {"cf": 0, "pf": 2, "af": 4, "zf": 6, "sf": 7, "of": 11}
 TIMEOUT_SECONDS = 50
 
+IS_MACOS = sys.platform == "darwin"
+
+if IS_MACOS:
+    SYS_WRITE = "0x2000004"
+    SYS_EXIT =  "0x2000001"
+    ASSEMBLE_CMD = ["clang", "-arch", "x86_64", "-c", "-x", "assembler"] # TODO no more gnu assembler, this uses llvm i think. need to update docs, but should be fine.
+    LINK_CMD = ["clang", "-arch", "x86_64", "-ffreestanding", "-W1,-e,_main", "-nostartfiles"]
+else:
+    SYS_WRITE = "1"
+    SYS_EXIT =  "60"
+    ASSEMBLE_CMD = ["clang", "-c", "-x", "assembler"]
+    LINK_CMD = ["clang", "-ffreestanding", "-W1,-e,_main", "-nostdlib", "-static", "-no-pie"]
+
 class Color:
     GREEN = "\033[92m"
     RED = "\033[91m"
+    YELLOW = "\033[93m"
     BOLD = "\033[1m"
     RESET = "\033[0m"
 
+# Tests to be skipped on macOS because the x86 -> arm translation does not implement required instructions.
+# Anything with ADX, CMI2, AVX will need to go here.
+# Update this list when you notice a test fails on mac but succeeds on linux. Linux is the source of truth for our semantics, translated x86 on mac provides no additional value, it just allows one to run tests on mac locally.
+MAC_UNSUPPORTED = {
+    "test_arithmetic.S",
+}
+
 def get_boilerplate(instruction_text: str) -> str:
   reg_count = len(REGS)
-  # We move all base registers + the eflags register into memory, so as to dump it later to stdout.
   total_bytes = (reg_count + 1) * 8
-    
+
+  # Zero out all base registers + the eflags before starting.
+  normalize = "\n    ".join([f"xorq %{reg}, %{reg}" for reg in REGS if reg != "rsp"] + ["pushq $0", "popfq"])
+
+  # We move all base registers + the eflags register into memory, so as to dump it later to stdout.
   moves = "\n    ".join([f"movq %{reg}, _final_state + {i*8}(%rip)" for i, reg in enumerate(REGS)])
     
   return f"""
 .data
-.align 8
+.p2align 3
 _final_state: .space {total_bytes}
 
 .text
-.globl _start
-_start:
+.globl _main
+_main:
+{normalize}
 # --- Test Code Start ---
 {instruction_text}
 # --- Test Code End ---
@@ -48,15 +73,15 @@ _start:
     popq %rax
     movq %rax, _final_state + {reg_count * 8}(%rip)
 
-    # print syscall: arguments are 1 (syscall number), 1 (stdout), address of _final_state, and length of _final_state
+    # Write syscall: arguments are the syscall number, 1 (stdout), address of _final_state, and length of _final_state.
     # See e.g. https://x64.syscall.sh/ for syscall table.
-    movq $1, %rax
+    movq ${SYS_WRITE}, %rax
     movq $1, %rdi
     leaq _final_state(%rip), %rsi
     movq ${total_bytes}, %rdx
     syscall
 
-    movq $60, %rax
+    movq ${SYS_EXIT}, %rax
     xorq %rdi, %rdi
     syscall
 """
@@ -88,15 +113,16 @@ def run_real_x86(asm_path: Path) -> Tuple[Optional[ExecutionState], Optional[str
         s_file.write_text(full_source)
 
         try:
-            subprocess.run(["as", "-o", str(obj_file), str(s_file)], check=True, capture_output=True)
-            subprocess.run(["ld", "-o", str(bin_file), str(obj_file)], check=True, capture_output=True)
+            subprocess.run(ASSEMBLE_CMD + ["-o", str(obj_file), str(s_file)], check=True, capture_output=True)
+            subprocess.run(LINK_CMD + ["-o", str(bin_file), str(obj_file)], check=True, capture_output=True)
             res = subprocess.run([str(bin_file)], check=True, capture_output=True, timeout=TIMEOUT_SECONDS)
             return parse_raw_state(res.stdout), None
         except subprocess.CalledProcessError as e:
+            # TODO fix error reporting on mac. and add a timeout catch. and extra step with try and catch for parsing, to get errors correctly
             err = (e.stderr or b"").decode(errors="replace").replace(str(tmp), "...").strip()
             prologue_len = full_source.split("# --- Test Code Start ---")[0].count("\n") + 1
             line_nr_adjusted_err = re.sub(r":(\d+):", lambda m: f":{int(m.group(1)) - prologue_len}:", err)
-            return None, f"x86 Error ({e.cmd[0]}):\n{line_nr_adjusted_err}"
+            return None, f"x86 Error:\n{line_nr_adjusted_err}"
 
 def run_kraken(path: Path) -> Tuple[Optional[ExecutionState], Optional[str]]:
     try:
@@ -104,8 +130,7 @@ def run_kraken(path: Path) -> Tuple[Optional[ExecutionState], Optional[str]]:
         data = json.loads(res.stdout)
         return ExecutionState(regs=data["regs"], flags=data["flags"]), None
     except subprocess.CalledProcessError as e:
-        return None, f"Kraken Error:\n{(e.stderr or b"").decode(errors="replace").strip()}"
-    except Exception as e:
+        return None, f"Kraken Error:\n{(e.stderr or b'').decode(errors='replace').strip()}"
         return None, f"Kraken Error: {e}"
 
 # Parse the preamble for flags to be masked out because they are left undefined by the test.
@@ -131,6 +156,10 @@ def compare_states(real: ExecutionState, kraken: ExecutionState, undefined_flags
 
 def test_file(path: Path) -> Tuple[bool, str]:
     print(f"{path.name:50}", end="")
+
+    if IS_MACOS and path.name in MAC_UNSUPPORTED:
+        print(f"[{Color.YELLOW}SKIP{Color.RESET}] unsupported on macOS")
+        return True, ""
     
     real, real_err = run_real_x86(path)
     kraken, kraken_err = run_kraken(path)
@@ -149,6 +178,7 @@ def test_file(path: Path) -> Tuple[bool, str]:
     return True, ""
 
 if __name__ == "__main__":
+    # TODO fail fast if clang is not around.
     if not KRAKEN_RUNNER.exists():
         print(f"{Color.RED}Error: Kraken runner not found at {KRAKEN_RUNNER}{Color.RESET}")
         print(f"\nTo build it, run the following from the project root:")
