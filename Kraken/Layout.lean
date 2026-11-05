@@ -32,15 +32,20 @@ structure Executable (Instr : Type) where
   startAddr : Int64
   program : List (Sized (Directive Instr))
 
--- JP: why is `size` not `Directive → Nat`?
-class Layout (Instr : Type) where
+class Layout where
   start : Int64
-  size : Nat → Nat
+  instrSize : Nat → Nat
+  instrSize_pos : ∀ i, 0 < instrSize i
+
+def Layout.size {Instr : Type} [l : Layout] : Directive Instr → Nat → Nat
+  | .instr _, i => l.instrSize i
+  | .label _, _ => 0
+  | .byteArray arr, _ => arr.size
 
 variable {Instr : Type}
 
-def Layout.apply (l : Layout Instr) (prog : Program Instr) : Executable Instr :=
-  {startAddr := l.start, program := prog.mapIdx (fun i directive => {directive, size := l.size i})}
+def Layout.apply (l : Layout) {Instr : Type} (prog : Program Instr) : Executable Instr :=
+  {startAddr := l.start, program := prog.mapIdx (fun i directive => {directive, size := l.size directive i})}
 
 -- NOTE: We write `List (Kraken.Directive Instr)` here, and not `Kraken.Program Instr`, because architecture
 -- specific `Program` types are written as `List Directive` which desugar to `List (Kraken.Directive Instr)`,
@@ -48,8 +53,8 @@ def Layout.apply (l : Layout Instr) (prog : Program Instr) : Executable Instr :=
 -- Architecture specific programs are written as `List Directive` for architecture-specific `Directive`
 -- instead of `Kraken.Directive Instr` so that `ls[i].foo` searches for `Directive.foo` first, instead of
 -- going directly to `Kraken.Directive.foo` (which contains less information)
-instance : CoeFun (Layout Instr) (fun _ => List (Directive Instr) → Executable Instr) where
-  coe := Layout.apply
+instance : CoeFun Layout (fun _ => ∀ {Instr : Type}, List (Directive Instr) → Executable Instr) where
+  coe := @Layout.apply
 
 structure Addressable (Directive : Type) extends Sized Directive where (addr : Int64)
 
@@ -80,9 +85,9 @@ theorem Executable.withAddresses_dropWhile_start {Instr : Type} (program : List 
       Executable.withAddresses {startAddr, program} := by
   cases program <;> grind [Executable.withAddresses, List.dropWhile_cons, List.dropWhile_nil]
 
-theorem Executable.directivesFromStart {Instr : Type} [layout : Layout Instr] (prog : Program Instr) :
+theorem Executable.directivesFromStart {Instr : Type} [layout : Layout] (prog : Program Instr) :
     (layout prog).directivesFromAddress layout.start =
-      prog.mapIdx (fun i directive => {directive, size := layout.size i}) := by
+      prog.mapIdx (fun i directive => {directive, size := layout.size directive i}) := by
   grind [Executable.withAddresses_dropWhile_start, Executable.withAddresses_map_snd, Executable.directivesFromAddress, Layout.apply]
 
 theorem directivesAtFromPrefix {Instr : Type} (e: Executable Instr) (a: Int64):
@@ -184,3 +189,5 @@ theorem Executable.withAddresses_dropWhile_addrOf {Instr : Type} (e : Executable
     simpa using hj
 
 end Kraken
+
+export Kraken (Layout)

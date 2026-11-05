@@ -7,12 +7,21 @@ public import Kraken.X64.OmniSemantics
 /--
 `d` is inert if it falls through with the same machine state and no observable effect.
 
-Presently, labels and no-op instructions like `nop` and `mov %rax, %rax` are inert.
-Once `.byteArray` is implemented, an empty `.byteArray` will be inert as well.
+Presently, labels, empty `.byteArray`s, and no-op instructions like `nop` and `mov %rax, %rax` are
+inert.
 -/
 def Directive.Inert (d : Directive) : Prop :=
   ∀ [Labels] s p (next : MachineData → Effects) (jmp : Int64 → MachineData → Effects) post,
     (d.interp s p next jmp).All post ↔ (next s).All post
+
+theorem Directive.inert_of_size_eq_zero [l : Layout] {i : Nat} {d : Directive}
+    (hz : l.size d i = 0) : d.Inert := by
+  cases d with
+  | instr _ => exact absurd hz (Nat.ne_of_gt (l.instrSize_pos i))
+  | label _ => exact fun _ _ _ _ _ => Iff.rfl
+  | byteArray bs =>
+    intro _ s p next jmp post
+    simp [Directive.interp, ByteArray.isEmpty, show bs.size = 0 from hz]
 
 theorem Directives.interp_inert_append [Labels] {pre rest : List (Kraken.Sized Directive)}
     (hpre : ∀ c ∈ pre, c.size = 0 ∧ c.directive.Inert) (s : MachineData) (pc : Int64)

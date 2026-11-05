@@ -858,7 +858,9 @@ def Instr.interp [Labels]
   match d with
   | .label _ => next s
   | .instr i => i.interp s p next jmp
-  | .byteArray _ => .unimplemented s!"Unimplemented: execution reached data block at {p.1}"
+  | .byteArray bs =>
+    if bs.isEmpty then next s
+    else .unimplemented s!"Unimplemented: execution reached data block at {p.1}"
 
 def Directives.interp [Labels]
   (ds : List (Kraken.Sized Directive)) (s : MachineData) (pc : Int64)
@@ -868,8 +870,6 @@ def Directives.interp [Labels]
   | {directive, size := sz} :: ds =>
     directive.interp s (.mk pc (pc+.ofNat sz)) (jmp:=ret) (next := (fun s =>
     interp ds s (pc+.ofNat sz) ret))
-
-abbrev Layout := Kraken.Layout Instr
 
 @[reducible]
 def Executable.labels (e : Executable) : Labels :=
@@ -904,17 +904,16 @@ where
     | .nonmem_store _ addr _ _ => .error s!"Store at unmapped address {repr addr}"
     | @Effects.undefined _ t cont => handleEffects (cont (t.from_hash (hash s.1.regs)))
 
-def Directive.fakeSize (hashOfProgram : UInt64) (d : Directive) : Nat :=
-  match d with
-  | .label _ => 0
-  | .instr (.regular _ _ (.nop sz)) => sz -- may be zero
-  | .instr i => (1 + hash (hashOfProgram, i) % 15).toNat
-  | .byteArray bs => bs.size
-
 def Program.fakeLayout (prog : Program) : Executable :=
-  let : Inhabited Directive := .mk (.byteArray (.mk #[]))
-  let h := hash prog;
-  let layout : Layout := { start := h.toInt64<<<16, size i := prog[i]!.fakeSize h }
+  let h := hash prog
+  let layout : Layout := {
+    start := h.toInt64 <<< 16
+    instrSize i := match prog[i]? with
+      | some (.instr (.regular _ _ (.nop sz))) => max sz 1
+      | some (.instr ins) => (1 + hash (h, ins) % 15).toNat
+      | _ => 1
+    instrSize_pos _ := by split <;> grind
+  }
   layout prog
 
 abbrev eval [layout : Layout] (prog : Program) := Executable.eval (layout prog)

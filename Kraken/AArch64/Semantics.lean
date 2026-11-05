@@ -946,7 +946,9 @@ set_option maxHeartbeats 1000000
   match d with
   | .label _ => next s
   | .instr i => i.interp s p next jmp
-  | .byteArray _ => .unimplemented s!"Unimplemented: execution reached data block at {p.1}"
+  | .byteArray bs =>
+    if bs.isEmpty then next s
+    else .unimplemented s!"Unimplemented: execution reached data block at {p.1}"
 
 def Directives.interp [Labels]
   (ds : List (Kraken.Sized Directive)) (s : MachineData) (pc : Int64)
@@ -956,8 +958,6 @@ def Directives.interp [Labels]
   | {directive, size := sz} :: ds =>
     directive.interp s (.mk pc (pc+.ofNat sz)) (jmp:=ret) (next := (fun s =>
     interp ds s (pc+.ofNat sz) ret))
-
-abbrev Layout := Kraken.Layout Instr
 
 @[reducible]
 def Executable.labels (e : Executable) : Labels :=
@@ -992,16 +992,8 @@ where
     | .unaligned_sp sp => .error s!"SP={sp} (is not 16-byte aligned)"
     | @Effects.undefined _ t cont => handleEffects (cont (t.from_hash (hash s.1.regs)))
 
-def Directive.fakeSize (d : Directive) : Nat :=
-  match d with
-  | .instr _ => 4
-  | .label _ => 0
-  | .byteArray bs => bs.size
-
 def Program.fakeLayout (prog : Program) : Executable :=
-  let : Inhabited Directive := .mk (.byteArray (.mk #[]))
-  let h := hash prog;
-  let layout : Layout := { start := h.toInt64<<<16, size i := prog[i]!.fakeSize }
+  let layout : Layout := { start := (hash prog).toInt64 <<< 16, instrSize _ := 4, instrSize_pos _ := by decide }
   layout prog
 
 abbrev eval [layout : Layout] (prog : Program) := Executable.eval (layout prog)
