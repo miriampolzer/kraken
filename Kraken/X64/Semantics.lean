@@ -883,14 +883,10 @@ def Executable.step (e : Executable) (s : MachineState) (ret : MachineState → 
   let := Executable.labels e
   Directives.interp (e.directivesAtAddress s.pc) s.data s.pc (fun pc s => ret ⟨s, pc⟩)
 
-def Executable.straightline (e : Executable) (s : MachineState) (ret : MachineState → Effects) : Effects :=
-  let := Executable.labels e
-  Directives.interp (e.directivesFromAddress s.pc) s.data s.pc (fun pc s => ret ⟨s, pc⟩)
-
 -- -- Concrete evaluators for expedient testing
 
 partial def Executable.eval (e : Executable) (s : MachineState) (until_ : MachineState → Bool) : Except String (MachineState) :=
-  if until_ s then .ok s else handleEffects (Executable.straightline e s .done)
+  if until_ s then .ok s else handleEffects (Executable.step e s .done)
 where
   handleEffects es :=
     match es with
