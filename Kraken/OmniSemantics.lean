@@ -56,3 +56,22 @@ theorem reg_dec_loop {State : Type} (trans : State → Post → Prop) (post : Po
       exact eventually_trans trans (invariant (n - 1)) post initial
         (hnz initial n h hinv) fun s hs =>
           reg_dec_loop trans post s invariant (n - 1) ⟨hs, hzero, hnz⟩
+
+private theorem Eventually.of_stall {State : Type} {trans : State → Post → Prop} {post : Post}
+    {x : State} (h : Eventually trans post x) (hx : ∀ U, trans x U → U x) : post x := by
+  induction h with
+  | done _ hp => exact hp
+  | step x U ht _ ih => exact ih x (hx U ht) hx
+
+theorem Eventually.and_of_stall {State : Type} {trans : State → Post → Prop} {S : Post}
+    (hstall : ∀ x U, S x → trans x U → U x)
+    (hand : ∀ x U V, trans x U → trans x V → trans x fun y => U y ∧ V y)
+    {P Q : Post} (hP : ∀ x, P x → S x) (hQ : ∀ x, Q x → S x) {x : State}
+    (h₁ : Eventually trans P x) (h₂ : Eventually trans Q x) :
+    Eventually trans (fun y => P y ∧ Q y) x := by
+  induction h₁ with
+  | done x hp => exact .done _ ⟨hp, h₂.of_stall fun U hU => hstall x U (hP x hp) hU⟩
+  | step x U hU _ ih =>
+    cases h₂ with
+    | done _ hq => exact ih x (hstall x U (hQ x hq) hU) (.done _ hq)
+    | step _ V hV h₂ => exact .step _ _ (hand x U V hU hV) fun y ⟨hu, hv⟩ => ih y hu (h₂ y hv)

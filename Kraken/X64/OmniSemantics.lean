@@ -204,3 +204,42 @@ theorem Eventually.append {layout : Layout} (p₁ p₂ : Program)
   haveI : layout.WellFormed ([] ++ (p₁ ++ p₂)) := hwf
   apply Eventually.infix [] p₁ p₂
   rwa [Layout.drop_nil]
+
+theorem Effects.All.and [Labels] {P Q : MachineState → Prop} {e : Effects} (h₁ : e.All P)
+    (h₂ : e.All Q) : e.All (fun u => P u ∧ Q u) := by
+  match e with
+  | .done _ => exact ⟨h₁, h₂⟩
+  | .unimplemented _ | .gp_unaligned .. | .nonmem_load .. | .nonmem_store .. => exact h₁.elim
+  | .resolve_label lbl k =>
+    simp only [Effects.All_resolve_label] at h₁ h₂ ⊢
+    cases hlbl : label? lbl <;> rw [hlbl] at h₁ h₂
+    · exact h₁.elim
+    · exact Effects.All.and (e := k _) h₁ h₂
+  | @Effects.undefined _ _ cont =>
+    exact fun v => Effects.All.and (e := cont v) (h₁ v) (h₂ v)
+  | .require_read_access _ cont | .require_write_access _ cont | .require_exec_access _ cont =>
+    exact Effects.All.and (e := cont ()) h₁ h₂
+
+private theorem Effects.All.exists [Labels] {P : MachineState → Prop} {e : Effects}
+    (h : e.All P) : ∃ u, P u := by
+  match e with
+  | .done u => exact ⟨u, h⟩
+  | .unimplemented _ | .gp_unaligned .. | .nonmem_load .. | .nonmem_store .. => exact h.elim
+  | .resolve_label lbl k =>
+    simp only [Effects.All_resolve_label] at h
+    cases hlbl : label? lbl <;> rw [hlbl] at h
+    · exact h.elim
+    · exact Effects.All.exists (e := k _) h
+  | @Effects.undefined _ _ cont =>
+    exact Effects.All.exists (e := cont _) (h (NondetSupportingType.from_hash 0))
+  | .require_read_access _ cont | .require_write_access _ cont | .require_exec_access _ cont =>
+    exact Effects.All.exists (e := cont ()) h
+
+theorem Eventually.exists {e : Executable} {P : MachineState → Prop} {st : MachineState}
+    (h : Eventually (step1 e) P st) : ∃ u, P u := by
+  induction h with
+  | done u hp => exact ⟨u, hp⟩
+  | step _ _ hU _ ih =>
+    letI := e.labels
+    obtain ⟨u, hu⟩ := hU.exists
+    exact ih u hu
