@@ -15,4 +15,3 @@ public import Kraken.X64.OmniSemantics
 public import Kraken.X64.Parser
 public import Kraken.X64.Semantics
 public import Kraken.X64.Sep
-public import Kraken.X64.WP
