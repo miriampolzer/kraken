@@ -57,6 +57,20 @@ theorem reg_dec_loop {State : Type} (trans : State → Post → Prop) (post : Po
         (hnz initial n h hinv) fun s hs =>
           reg_dec_loop trans post s invariant (n - 1) ⟨hs, hzero, hnz⟩
 
+theorem tailrec_loop {State : Type} {α : Sort _}
+    {trans : State → Post → Prop} {P Q : α → Post} {lt : α → α → Prop}
+    (hwf : WellFounded lt)
+    (hbody : ∀ a s, P a s →
+      Eventually trans (fun s' => Q a s' ∨ ∃ a', P a' s' ∧ lt a' a ∧ ∀ t, Q a' t → Q a t) s)
+    (a : α) {s : State} (hP : P a s) :
+    Eventually trans (Q a) s := by
+  induction a using hwf.induction generalizing s with
+  | h a ih =>
+    refine eventually_trans _ _ _ _ (hbody a s hP) ?_
+    rintro s' (hq | ⟨a', hp', hlt, himp⟩)
+    · exact .done _ hq
+    · exact eventually_weaken _ _ _ _ himp (ih a' hlt hp')
+
 private theorem Eventually.of_stall {State : Type} {trans : State → Post → Prop} {post : Post}
     {x : State} (h : Eventually trans post x) (hx : ∀ U, trans x U → U x) : post x := by
   induction h with
